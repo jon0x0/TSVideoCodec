@@ -37,6 +37,8 @@ def main() -> None:
     parser.add_argument("--encoder", choices=("python", "native"), default="python")
     parser.add_argument("--max-hybrid-bytes", type=int, default=1400,
                         help="per-frame reconstructed delta budget; zero disables")
+    parser.add_argument("--keyframe-codec", choices=("raw", "packbits", "auto"),
+                        default="auto", help="cartridge initial-frame storage")
     parser.add_argument("--dither-mode", choices=("sierra-lite", "legacy"),
                         default="sierra-lite")
     parser.add_argument("--auto", action=argparse.BooleanOptionalAction, default=True)
@@ -88,6 +90,7 @@ def main() -> None:
             "--fps-num", rate.numerator, "--fps-den", rate.denominator,
             "--delta-format", "hybrid")
         cartridge_args: list[object] = [sequence, stream, output / "cartridge"]
+        cartridge_args += ["--keyframe-codec", args.keyframe_codec]
         if args.loop:
             cartridge_args += ["--seamless-loop", "--loop-pause-frames",
                                args.loop_pause_frames]
@@ -123,6 +126,7 @@ def main() -> None:
         "max_frames": args.max_frames, "start_seconds": args.start_seconds,
         "geometry": args.geometry, "encoder": args.encoder, "auto": args.auto,
         "max_hybrid_bytes": args.max_hybrid_bytes,
+        "keyframe_codec": args.keyframe_codec,
         "transport": args.transport if args.format != "tap" else "tap-raster",
         "loop": args.loop, "artifacts": artifacts,
     }

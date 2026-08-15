@@ -1,5 +1,19 @@
 # Implementation
 
+## Initial keyframe
+
+A complete ECM keyframe contains a 6144-byte bitmap and a 6144-byte attribute
+plane. Cartridge builds support raw storage and a bounded PackBits format;
+`--keyframe-codec auto` chooses PackBits only when it saves at least 256 bytes.
+Literal commands contain 1–128 bytes and repeated-byte commands expand to
+3–130 bytes, so either compressed plane is guaranteed to fit in one 8 KB bank.
+
+At startup the player clears `$6000-$77ff`, reconstructs the bitmap directly
+into `$4000-$57ff`, and then reconstructs the attributes directly into the live
+attribute plane. This prevents uninitialized colour from being paired with a
+partly constructed bitmap and needs no temporary 6 KB RAM buffer. The builder
+round-trips both compressed planes before packaging them.
+
 ## Display model
 
 SVD-ECM models both 6 KB TS2068 display planes exactly. Each visible 8x1 cell

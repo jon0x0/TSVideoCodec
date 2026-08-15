@@ -17,16 +17,23 @@ NEXT_ROW_PTR    EQU     $7806
 FIRST_DECODE    EQU     $7808
 ROWS_LEFT       EQU     $7809
 PAIRS_LEFT      EQU     $780A
+PACK_COUNT      EQU     $780C
+PACK_VALUE      EQU     $780D
 
 START:          DI
                 POP     HL                  ; move AROS return off screen RAM
                 LD      SP,$7FFF
                 PUSH    HL
-                LD      A,2
-                OUT     (PORT_CTRL),A
                 LD      HL,0
                 LD      (SCHED_ACC),HL
                 CALL    PRELOAD_SHADOW
+                LD      HL,$6000           ; hide keyframe construction
+                LD      DE,$6001
+                LD      BC,$17FF
+                LD      (HL),0
+                LDIR
+                LD      A,2
+                OUT     (PORT_CTRL),A
                 CALL    RESET_SEQUENCE
 
 NEXT_FRAME:     CALL    NEXT_INTERVAL
@@ -133,15 +140,17 @@ PRELOAD_SHADOW: LD      A,$1C               ; cartridge chunks 2,3,4
 COPY_FRAME:     LD      A,(IX+0)            ; 1=key table, 2=XOR, 3=hybrid
                 INC     IX
                 CP      3
-                JR      Z,COPY_HYBRID
+                JP      Z,COPY_HYBRID
                 CP      4
-                JR      Z,COPY_RASTER
+                JP      Z,COPY_RASTER
                 CP      5
                 JP      Z,COPY_ROW_HYBRID
                 CP      6
                 JP      Z,COPY_PAIRED
+                CP      7
+                JP      Z,COPY_PACK_KEY
                 CP      2
-                JR      Z,COPY_XOR
+                JP      Z,COPY_XOR
 COPY_KEY:       LD      A,(IX+0)
                 INC     IX
                 OR      A
@@ -161,6 +170,63 @@ ADVANCE_IX:     INC     IX
                 JR      NZ,ADVANCE_IX
                 LDIR
                 JR      COPY_KEY
+
+; Two PackBits planes: bitmap then attributes. Each table record is mask,source.
+COPY_PACK_KEY:  LD      A,(IX+0)
+                LD      BC,$00F4
+                OUT     (C),A
+                LD      E,(IX+1)
+                LD      D,(IX+2)
+                LD      HL,$4000
+                LD      BC,$1800
+                CALL    DECODE_PACKBITS
+                LD      A,(IX+3)
+                LD      BC,$00F4
+                OUT     (C),A
+                LD      E,(IX+4)
+                LD      D,(IX+5)
+                LD      HL,$6000
+                LD      BC,$1800
+                CALL    DECODE_PACKBITS
+                JP      COPY_DONE
+
+; DE=packed source, HL=destination, BC=exact output length.
+; 0..127: 1..128 literals; 128..255: 3..130 repeated bytes.
+DECODE_PACKBITS:
+PACK_NEXT:      LD      A,(DE)
+                INC     DE
+                BIT     7,A
+                JR      NZ,PACK_RUN
+                INC     A
+                LD      (PACK_COUNT),A
+PACK_LITERAL:   LD      A,(DE)
+                INC     DE
+                LD      (HL),A
+                INC     HL
+                DEC     BC
+                LD      A,(PACK_COUNT)
+                DEC     A
+                LD      (PACK_COUNT),A
+                JR      NZ,PACK_LITERAL
+                JR      PACK_CHECK
+PACK_RUN:       AND     $7F
+                ADD     A,3
+                LD      (PACK_COUNT),A
+                LD      A,(DE)
+                INC     DE
+                LD      (PACK_VALUE),A
+PACK_RUN_LOOP:  LD      A,(PACK_VALUE)
+                LD      (HL),A
+                INC     HL
+                DEC     BC
+                LD      A,(PACK_COUNT)
+                DEC     A
+                LD      (PACK_COUNT),A
+                JR      NZ,PACK_RUN_LOOP
+PACK_CHECK:     LD      A,B
+                OR      C
+                RET     Z
+                JR      PACK_NEXT
 
 COPY_XOR:       LD      A,(IX+0)
                 LD      C,$F4

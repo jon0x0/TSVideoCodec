@@ -59,6 +59,16 @@ The normal interface is a single command. For a looping 64 KB cartridge:
 python tsvideocodec.py input.gif build/example --format cartridge
 ```
 
+The initial cartridge frame uses `--keyframe-codec auto` by default. It selects
+PackBits when that meaningfully reduces the 12 KB bitmap-plus-attribute frame;
+use `raw` or `packbits` to force either representation. During startup the
+player clears the live attributes, decompresses the bitmap directly into ECM
+screen memory, then decompresses the attributes for a controlled colour reveal.
+
+```powershell
+python tsvideocodec.py video\Kahnankas.mp4 build\kahn --format cartridge --keyframe-codec packbits
+```
+
 This performs frame extraction, automatic ECM encoding, SVD stream packing,
 and cartridge assembly. The output is
 `build/example/cartridge/svd_video_64k.dck`.

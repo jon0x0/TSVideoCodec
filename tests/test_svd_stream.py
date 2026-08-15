@@ -5,6 +5,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parents[1] / "src" / "encoder"))
 from svd_ecm import ECMFrame, PLANE_SIZE, screen_offset
+from keyframe_codec import decode_packbits, encode_packbits
 from svd_stream import (decode_delta, decode_hybrid, decode_paired_cells, decode_sparse,
                         decode_stream, decode_xor, encode_delta, encode_hybrid,
                         encode_paired_cells, encode_sparse, encode_stream, encode_xor)
@@ -115,3 +116,10 @@ def test_z80_decoder_contract():
     subprocess.run([
         sys.executable, str(root / "src" / "tools" / "validate_decoder_contract.py")
     ], check=True)
+
+
+def test_keyframe_packbits_round_trip_and_bounds():
+    source = bytes([0] * 300 + list(range(256)) * 20 + [7] * 588)
+    encoded = encode_packbits(source)
+    assert decode_packbits(encoded, len(source)) == source
+    assert len(encode_packbits(bytes(range(256)) * 24)) < 0x2000

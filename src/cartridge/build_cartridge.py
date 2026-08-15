@@ -13,6 +13,7 @@ sys.path.insert(0, str(ROOT / "encoder"))
 sys.path.insert(0, str(ROOT))
 from toolchain import assemble_pasmo
 from svd_ecm import ECMFrame
+from keyframe_codec import decode_packbits, encode_packbits
 from svd_stream import encode_delta, encode_hybrid, encode_paired_cells, encode_row_hybrid
 from svd_ecm import screen_offset
 CHUNK_SIZE = 0x2000
@@ -42,6 +43,8 @@ def main() -> None:
                         help="use bottom-to-top replacement cells with paired bitmap/colour")
     parser.add_argument("--frame-limit", type=int, default=0,
                         help="diagnostic limit; zero uses the complete sequence")
+    parser.add_argument("--keyframe-codec", choices=("raw", "packbits", "auto"), default="auto",
+                        help="initial frame storage (auto uses compression only when worthwhile)")
     args = parser.parse_args()
     if args.stop_at_end and args.seamless_loop:
         raise SystemExit("--stop-at-end and --seamless-loop are mutually exclusive")
@@ -92,12 +95,30 @@ def main() -> None:
 
     frame_records = []
     frame_stats = []
-    # Frame zero is a raw keyframe. Later frames are compact, independently
-    # terminated bitmap and attribute XOR streams and never cross an 8K bank.
-    payload[:0x3000] = frames[0]
-    frame_records.append(("key", segments(0, 0x4000, 0x1800) +
-                          segments(0x1800, 0x6000, 0x1800)))
-    frame_stats.append({"frame": 0, "frame_type": "KEY", "update_bytes": 0x3000})
+    key_planes = [encode_packbits(frames[0][:0x1800]), encode_packbits(frames[0][0x1800:])]
+    if (decode_packbits(key_planes[0], 0x1800) != frames[0][:0x1800] or
+            decode_packbits(key_planes[1], 0x1800) != frames[0][0x1800:]):
+        raise SystemExit("compressed keyframe failed round-trip verification")
+    compressed_key_size = sum(map(len, key_planes))
+    keyframe_codec = args.keyframe_codec
+    if keyframe_codec == "auto":
+        keyframe_codec = "packbits" if compressed_key_size + 256 < 0x3000 else "raw"
+    pack_items = []
+    if keyframe_codec == "raw":
+        payload[:0x3000] = frames[0]
+        frame_records.append(("key", segments(0, 0x4000, 0x1800) +
+                              segments(0x1800, 0x6000, 0x1800)))
+        slots = [[0x3000, 0x4000]] + [
+            [slot * CHUNK_SIZE, (slot + 1) * CHUNK_SIZE]
+            for slot in range(2, len(STREAM_CHUNKS))]
+        key_stored_size = 0x3000
+    else:
+        pack_items.extend([("key_bitmap", key_planes[0]), ("key_attributes", key_planes[1])])
+        slots = [[slot * CHUNK_SIZE, (slot + 1) * CHUNK_SIZE]
+                 for slot in range(len(STREAM_CHUNKS))]
+        key_stored_size = compressed_key_size
+    frame_stats.append({"frame": 0, "frame_type": f"KEY_{keyframe_codec.upper()}",
+                        "update_bytes": key_stored_size})
     blobs = []
     for index in range(1, len(frames)):
         previous = ECMFrame(frames[index - 1][:0x1800], frames[index - 1][0x1800:])
@@ -125,11 +146,9 @@ def main() -> None:
 
     # Best-fit decreasing placement keeps each delta in one source bank while
     # reclaiming holes that chronological packing leaves behind.
-    slots = [[0x3000, 0x4000]] + [
-        [slot * CHUNK_SIZE, (slot + 1) * CHUNK_SIZE] for slot in range(2, len(STREAM_CHUNKS))
-    ]
     placements = {}
-    for index, blob in sorted(blobs, key=lambda item: len(item[1]), reverse=True):
+    pack_items.extend(blobs)
+    for index, blob in sorted(pack_items, key=lambda item: len(item[1]), reverse=True):
         candidates = [(end - start, slot_index) for slot_index, (start, end) in enumerate(slots)
                       if end - start >= len(blob)]
         if not candidates:
@@ -139,6 +158,14 @@ def main() -> None:
         payload[offset:offset + len(blob)] = blob
         slots[slot_index][0] += len(blob)
         placements[index] = (offset, blob)
+
+    if keyframe_codec == "packbits":
+        key_records = []
+        for key in ("key_bitmap", "key_attributes"):
+            offset, blob = placements[key]
+            mask, source, _, _ = segments(offset, 0, len(blob))[0]
+            key_records.append((mask, source))
+        frame_records.append(("key_packbits", key_records))
 
     for index, blob in blobs:
         offset, blob = placements[index]
@@ -156,7 +183,7 @@ def main() -> None:
                                 "update_bytes": len(blob)})
         else:
             loop_record = source[:2]
-    used_payload = 0x3000 + sum(len(blob) for _, blob in blobs)
+    used_payload = key_stored_size + sum(len(blob) for _, blob in blobs)
 
     lines = [f"FRAME_COUNT     EQU     {len(frames)}", "FRAME_TABLE_PTRS:"]
     lines.append("                DW      " + ",".join(f"FRAME_{i}_TABLE" for i in range(len(frames))))
@@ -168,6 +195,10 @@ def main() -> None:
                 lines.append(f"                DB      ${mask:02X}\n"
                              f"                DW      ${source:04X},${destination:04X},${count:04X}")
             lines.append("                DB      0")
+        elif kind == "key_packbits":
+            lines.append("                DB      7")
+            for mask, source in records:
+                lines.append(f"                DB      ${mask:02X}\n                DW      ${source:04X}")
         else:
             mask, source = records
             record_type = 6 if kind == "paired" else 4 if kind == "raster" else 5 if kind == "row_hybrid" else 3
@@ -243,6 +274,9 @@ def main() -> None:
              else f"banked hybrid bitmap/attribute delta streams, {args.loop_pause_frames}-frame loop pause")
         ),
         "frame_count": len(frames),
+        "keyframe_codec": keyframe_codec,
+        "keyframe_raw_bytes": 0x3000,
+        "keyframe_stored_bytes": key_stored_size,
         "seamless_loop": args.seamless_loop,
         "stop_at_end": args.stop_at_end,
         "decode_tick_compensation": args.decode_tick_compensation,

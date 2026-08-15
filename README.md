@@ -53,6 +53,41 @@ On Windows, use GNU Make with GCC/Clang, or compile `svdenc.c` as documented in
 
 ## Complete GIF/video to cartridge example
 
+The normal interface is a single command. For a looping 64 KB cartridge:
+
+```sh
+python tsvideocodec.py input.gif build/example --format cartridge
+```
+
+This performs frame extraction, automatic ECM encoding, SVD stream packing,
+and cartridge assembly. The output is
+`build/example/cartridge/svd_video_64k.dck`.
+
+For a TAP instead:
+
+```sh
+python tsvideocodec.py input.gif build/example --format tap
+```
+
+The output is `build/example/tap/svd_video.tap`. Use `--format both` to produce
+both outputs from the same encoded sequence.
+
+Common options include:
+
+```sh
+python tsvideocodec.py input.mp4 build/example --format both \
+  --start-seconds 3 --fps 12 --max-frames 12 --geometry crop \
+  --max-hybrid-bytes 1400 --transport paired --encoder native
+```
+
+Run `python tsvideocodec.py --help` for all options. Pasmo 0.5.5 must be on
+`PATH`, named by `PASMO`, or supplied with `--pasmo`.
+
+### Equivalent individual stages
+
+The lower-level commands remain available for experimentation and reproducible
+inspection of each stage:
+
 The following example converts `input.gif` into a seamless 64 KB cartridge.
 The same command accepts formats supported by FFmpeg, including MP4, MOV, MKV,
 and animated WebP. Pasmo 0.5.5 must be on `PATH`; alternatively pass its full

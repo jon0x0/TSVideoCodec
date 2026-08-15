@@ -1,0 +1,43 @@
+# Generated media and local source clips
+/build/
+/out/
+/tmp/
+/video/
+/ts2068_svd_codex_handoff/
+
+# Local agent/project state
+/.agents/
+/AGENTS.md
+/docs/CODEX_START.md
+/docs/KNOWN_CONTEXT_AND_QUESTIONS.md
+/docs/PRIOR_TS2068_DEBUG_CONTEXT.md
+/docs/TS2068VideoCodecInitialAnalysis.rtf
+
+# Python and native build products
+__pycache__/
+.pytest_cache/
+.venv/
+*.py[cod]
+*.o
+*.obj
+*.a
+*.lib
+*.so
+*.dylib
+*.dll
+*.exe
+*.bin
+*.svd
+*.pix
+*.atr
+*.zip
+/src/native_encoder/build/
+
+# Emulator logs and generated reports
+*.log
+*.symbols
+*.csv
+
+# Curated runnable demos are the only checked-in binaries.
+!/demos/*.dck
+!/demos/*.tap

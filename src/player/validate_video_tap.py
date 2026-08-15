@@ -1,0 +1,34 @@
+#!/usr/bin/env python3
+"""Boot the autostart video TAP in Fuse and verify its last ECM frame."""
+
+from __future__ import annotations
+
+import argparse
+from pathlib import Path
+
+from validate_ram_demo import DEFAULT_FUSE, capture, symbol_address
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("build", type=Path)
+    parser.add_argument("sequence", type=Path)
+    parser.add_argument("--fuse", type=Path, default=DEFAULT_FUSE)
+    args = parser.parse_args()
+    tap = args.build / "svd_video.tap"
+    hold = symbol_address(args.build / "svd_video_tap.symbols", "PAUSE_LAST")
+    captured = b"".join(capture(args.fuse, tap, hold, base + offset, 0x400)
+                        for base in (0x4000, 0x6000)
+                        for offset in range(0, 0x1800, 0x400))
+    pix = sorted(args.sequence.glob("frame_*.pix"))[-1]
+    expected = pix.read_bytes() + pix.with_suffix(".atr").read_bytes()
+    if captured != expected:
+        bitmap = sum(a != b for a, b in zip(captured[:0x1800], expected[:0x1800]))
+        attrs = sum(a != b for a, b in zip(captured[0x1800:], expected[0x1800:]))
+        raise SystemExit(f"Fuse TAP mismatch: bitmap={bitmap}, attributes={attrs}")
+    print(f"Fuse reached TAP PAUSE_LAST at ${hold:04X}")
+    print("TAP bitmap and ECM attributes match the encoded last frame exactly")
+
+
+if __name__ == "__main__":
+    main()

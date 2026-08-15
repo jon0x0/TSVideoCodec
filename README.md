@@ -51,29 +51,82 @@ make -C src/native_encoder
 On Windows, use GNU Make with GCC/Clang, or compile `svdenc.c` as documented in
 [`src/native_encoder/README.md`](src/native_encoder/README.md).
 
-## Quick start
+## Complete GIF/video to cartridge example
 
-Reference Python encoder:
+The following example converts `input.gif` into a seamless 64 KB cartridge.
+The same command accepts formats supported by FFmpeg, including MP4, MOV, MKV,
+and animated WebP. Pasmo 0.5.5 must be on `PATH`; alternatively pass its full
+path with `--pasmo` or set the `PASMO` environment variable.
+
+First generate reconstructed TS2068 frames. The byte ceiling makes a 12-frame
+example reasonably likely to fit even when the source contains substantial
+motion:
 
 ```sh
 python src/encoder/encode_sequence.py input.gif build/example/sequence \
-  --fps 12 --max-frames 24 --geometry fit --dither-mode sierra-lite --auto
+  --fps 12 --max-frames 12 --geometry fit \
+  --dither-mode sierra-lite --auto --max-hybrid-bytes 1400
 ```
 
-Native encoder:
-
-```sh
-python src/encoder/encode_sequence.py input.gif build/example/sequence \
-  --encoder native --fps 12 --max-frames 24 --geometry fit \
-  --dither-mode sierra-lite --auto
-```
+To use the optional native C encoder, build it first and add `--encoder native`
+to the command above. The Python encoder is the portable reference default.
 
 Pack the reconstructed frames into an SVD stream:
 
 ```sh
-python src/encoder/pack_svd.py build/example/sequence build/example/video.svd \
-  --fps-num 12 --delta-format hybrid
+python src/encoder/pack_svd.py \
+  build/example/sequence build/example/video.svd \
+  --fps-num 12 --fps-den 1 --delta-format hybrid
 ```
+
+Build a looping cartridge using raster-ordered paired bitmap/colour updates:
+
+```sh
+python src/cartridge/build_cartridge.py \
+  build/example/sequence build/example/video.svd build/example/cartridge \
+  --seamless-loop --loop-pause-frames 0 --paired-cell-updates
+```
+
+The runnable files are:
+
+- `build/example/cartridge/svd_video_64k.dck` for Fuse and DCK-aware tools
+- `build/example/cartridge/svd_video_64k.bin`, the exact 65,536-byte image
+
+The packer reports the used payload and rejects an image that exceeds the seven
+available media banks. If a source does not fit, reduce `--max-frames`, lower
+`--max-hybrid-bytes`, reduce the sampling rate, or choose a more compact update
+transport. `--paired-cell-updates` is intended to reduce visible tearing;
+omitting it uses the smaller and faster hybrid-plane cartridge decoder.
+
+For an MP4 beginning three seconds into the source, the encoding step could be:
+
+```sh
+python src/encoder/encode_sequence.py input.mp4 build/example/sequence \
+  --start-seconds 3 --fps 12 --max-frames 12 --geometry crop \
+  --dither-mode sierra-lite --auto --max-hybrid-bytes 1400
+```
+
+## Complete GIF/video to TAP example
+
+Encode the source as above, then build a self-loading TAP directly from the
+generated sequence:
+
+```sh
+python src/player/build_video_tap.py \
+  build/example/sequence build/example/tap \
+  --fps-num 12 --fps-den 1
+```
+
+This produces `build/example/tap/svd_video.tap`. Load it normally; playback
+starts automatically. Pressing a key restores the original BASIC workspace,
+returns to normal display mode, and returns to BASIC.
+
+The current TAP player has a safe contiguous image budget of 26,624 bytes,
+including its 12,288-byte keyframe and player code. TAP capacity is therefore
+smaller than cartridge capacity. If the builder reports an overflow, reduce
+the number of frames or use a tighter rate-control setting. The TAP builder
+currently uses its raster replacement transport, while cartridge output offers
+hybrid, row-hybrid, and paired-cell transports.
 
 Every sequence build records source identity, frame selection, tone settings,
 rate control, and automatic-analysis decisions under its output directory.

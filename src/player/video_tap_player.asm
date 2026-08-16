@@ -19,6 +19,11 @@ START:          LD      (ORIGINAL_SP),SP
                 LD      BC,WORKSPACE_SIZE
                 LDIR                        ; preserve all RAM used as ECM attrs
                 LD      SP,$FF00
+                LD      HL,$6000
+                LD      DE,$6001
+                LD      BC,$17FF
+                LD      (HL),0
+                LDIR                        ; hide initial bitmap construction
                 LD      A,2                 ; SCLD Extended Color Mode
                 OUT     (PORT_CTRL),A
                 LD      HL,0
@@ -43,6 +48,8 @@ NEXT_FRAME:     CALL    NEXT_INTERVAL
                 INC     HL
                 CP      1
                 JR      Z,COPY_KEY
+                CP      7
+                JR      Z,COPY_PACK_KEY
                 CP      4
                 JP      NZ,EXIT_PLAYER
                 LD      E,(HL)
@@ -62,6 +69,19 @@ COPY_KEY:       LD      E,(HL)
                 LD      DE,$6000
                 LD      BC,$1800
                 LDIR
+
+                JR      FRAME_READY
+
+COPY_PACK_KEY:  LD      E,(HL)
+                INC     HL
+                LD      D,(HL)
+                EX      DE,HL               ; HL=combined packed planes
+                LD      DE,$4000
+                LD      BC,$1800
+                CALL    DECODE_PACKBITS
+                LD      DE,$6000
+                LD      BC,$1800
+                CALL    DECODE_PACKBITS
 
 FRAME_READY:    EI
 HOLD:           HALT
@@ -132,6 +152,44 @@ EXIT_STACK_RESTORED:
                 LD      SP,(ORIGINAL_SP)
                 EI
                 RET
+
+; HL=packed source, DE=destination, BC=exact output length. HL continues at
+; the next plane, allowing bitmap and attributes to share one contiguous blob.
+DECODE_PACKBITS:
+PACK_NEXT:      LD      A,(HL)
+                INC     HL
+                BIT     7,A
+                JR      NZ,PACK_RUN
+                INC     A
+                LD      (PACK_COUNT),A
+PACK_LITERAL:   LD      A,(HL)
+                INC     HL
+                LD      (DE),A
+                INC     DE
+                DEC     BC
+                LD      A,(PACK_COUNT)
+                DEC     A
+                LD      (PACK_COUNT),A
+                JR      NZ,PACK_LITERAL
+                JR      PACK_CHECK
+PACK_RUN:       AND     $7F
+                ADD     A,3
+                LD      (PACK_COUNT),A
+                LD      A,(HL)
+                INC     HL
+                LD      (PACK_VALUE),A
+PACK_RUN_LOOP:  LD      A,(PACK_VALUE)
+                LD      (DE),A
+                INC     DE
+                DEC     BC
+                LD      A,(PACK_COUNT)
+                DEC     A
+                LD      (PACK_COUNT),A
+                JR      NZ,PACK_RUN_LOOP
+PACK_CHECK:     LD      A,B
+                OR      C
+                RET     Z
+                JR      PACK_NEXT
 
 ; Raster replacement decoder: 00=end, 01=skip u16, 02=bitmap,
 ; 03=attribute, 04=bitmap/attribute pairs. Runs never cross a row.
@@ -222,6 +280,8 @@ NEXT_TICK:      DB      0
 SCHED_ACC:      DW      0
 NEXT_ROW_PTR:   DW      0
 ORIGINAL_SP:    DW      0
+PACK_COUNT:     DB      0
+PACK_VALUE:     DB      0
 
 BITMAP_ROWS:
                 INCLUDE "bitmap_rows.inc"

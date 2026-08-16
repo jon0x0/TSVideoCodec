@@ -59,7 +59,7 @@ The normal interface is a single command. For a looping 64 KB cartridge:
 python tsvideocodec.py input.gif build/example --format cartridge
 ```
 
-The initial cartridge frame uses `--keyframe-codec auto` by default. It selects
+The initial TAP or cartridge frame uses `--keyframe-codec auto` by default. It selects
 PackBits when that meaningfully reduces the 12 KB bitmap-plus-attribute frame;
 use `raw` or `packbits` to force either representation. During startup the
 player clears the live attributes, decompresses the bitmap directly into ECM
@@ -167,8 +167,9 @@ starts automatically. Pressing a key restores the original BASIC workspace,
 returns to normal display mode, and returns to BASIC.
 
 The current TAP player has a safe contiguous image budget of 26,624 bytes,
-including its 12,288-byte keyframe and player code. TAP capacity is therefore
-smaller than cartridge capacity. If the builder reports an overflow, reduce
+including its keyframe and player code. PackBits commonly reduces the 12,288-byte
+raw keyframe by roughly half, leaving correspondingly more room for delta frames.
+TAP capacity is still smaller than cartridge capacity. If the builder reports an overflow, reduce
 the number of frames or use a tighter rate-control setting. The TAP builder
 currently uses its raster replacement transport, while cartridge output offers
 hybrid, row-hybrid, and paired-cell transports.

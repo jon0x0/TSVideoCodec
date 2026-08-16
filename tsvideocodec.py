@@ -114,6 +114,7 @@ def main() -> None:
         tap_args: list[object] = [
             sequence, output / "tap",
             "--fps-num", rate.numerator, "--fps-den", rate.denominator,
+            "--keyframe-codec", args.keyframe_codec,
         ]
         if args.pasmo:
             tap_args += ["--pasmo", args.pasmo]

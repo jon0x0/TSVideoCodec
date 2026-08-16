@@ -3,7 +3,7 @@
 ## Initial keyframe
 
 A complete ECM keyframe contains a 6144-byte bitmap and a 6144-byte attribute
-plane. Cartridge builds support raw storage and a bounded PackBits format;
+plane. TAP and cartridge builds support raw storage and a bounded PackBits format;
 `--keyframe-codec auto` chooses PackBits only when it saves at least 256 bytes.
 Literal commands contain 1–128 bytes and repeated-byte commands expand to
 3–130 bytes, so either compressed plane is guaranteed to fit in one 8 KB bank.

@@ -13,6 +13,7 @@ sys.path.insert(0, str(ROOT / "encoder"))
 sys.path.insert(0, str(ROOT))
 from toolchain import assemble_pasmo
 from svd_ecm import ECMFrame, screen_offset
+from keyframe_codec import decode_packbits, encode_packbits
 from svd_stream import encode_delta
 
 LOAD_ADDRESS = 0x7800
@@ -53,6 +54,8 @@ def main() -> None:
     parser.add_argument("--fps-den", type=int, default=11)
     parser.add_argument("--pasmo", default=None,
                         help="Pasmo executable; defaults to PASMO or PATH")
+    parser.add_argument("--keyframe-codec", choices=("raw", "packbits", "auto"),
+                        default="auto")
     args = parser.parse_args()
     args.output.mkdir(parents=True, exist_ok=True)
     frames = []
@@ -61,7 +64,18 @@ def main() -> None:
     if not frames:
         raise SystemExit("sequence contains no ECM frames")
 
-    (args.output / "frame_000.key").write_bytes(frames[0].bitmap + frames[0].attributes)
+    raw_key = frames[0].bitmap + frames[0].attributes
+    packed_bitmap = encode_packbits(frames[0].bitmap)
+    packed_attributes = encode_packbits(frames[0].attributes)
+    packed_key = packed_bitmap + packed_attributes
+    if (decode_packbits(packed_bitmap, 0x1800) != frames[0].bitmap or
+            decode_packbits(packed_attributes, 0x1800) != frames[0].attributes):
+        raise SystemExit("compressed keyframe failed round-trip verification")
+    keyframe_codec = args.keyframe_codec
+    if keyframe_codec == "auto":
+        keyframe_codec = "packbits" if len(packed_key) + 256 < len(raw_key) else "raw"
+    key_path = args.output / ("frame_000.keypack" if keyframe_codec == "packbits" else "frame_000.key")
+    key_path.write_bytes(packed_key if keyframe_codec == "packbits" else raw_key)
     blobs = []
     for index in range(1, len(frames)):
         blob, _ = encode_delta(frames[index - 1], frames[index])
@@ -69,7 +83,7 @@ def main() -> None:
         path.write_bytes(blob); blobs.append(path)
     loop_blob, _ = encode_delta(frames[-1], frames[0])
     (args.output / "loop.raster").write_bytes(loop_blob)
-    raster_payload_bytes = 0x3000 + sum(path.stat().st_size for path in blobs) + len(loop_blob)
+    raster_payload_bytes = key_path.stat().st_size + sum(path.stat().st_size for path in blobs) + len(loop_blob)
     safe_image_bytes = WORKSPACE_BACKUP - LOAD_ADDRESS
     if raster_payload_bytes + 1024 > safe_image_bytes:
         raise SystemExit(
@@ -81,12 +95,13 @@ def main() -> None:
              "                DW      " + ",".join(f"FRAME_{i}_TABLE" for i in range(len(frames))),
              "LOOP_TABLE_PTRS:",
              "                DW      LOOP_FRAME_TABLE," + ",".join(f"FRAME_{i}_TABLE" for i in range(1, len(frames))),
-             "FRAME_0_TABLE:", "                DB      1", "                DW      FRAME_0_DATA"]
+             "FRAME_0_TABLE:", f"                DB      {7 if keyframe_codec == 'packbits' else 1}",
+             "                DW      FRAME_0_DATA"]
     for index in range(1, len(frames)):
         lines += [f"FRAME_{index}_TABLE:", "                DB      4",
                   f"                DW      FRAME_{index}_DATA"]
     lines += ["LOOP_FRAME_TABLE:", "                DB      4", "                DW      LOOP_FRAME_DATA",
-              "FRAME_0_DATA:", '                INCBIN  "frame_000.key"']
+              "FRAME_0_DATA:", f'                INCBIN  "{key_path.name}"']
     for index in range(1, len(frames)):
         lines += [f"FRAME_{index}_DATA:", f'                INCBIN  "frame_{index:03d}.raster"']
     lines += ["LOOP_FRAME_DATA:", '                INCBIN  "loop.raster"']
@@ -124,6 +139,9 @@ def main() -> None:
                 "fps_den": args.fps_den, "load_address": LOAD_ADDRESS, "image_bytes": len(code),
                 "basic_ramtop": BASIC_RAMTOP,
                 "basic_workspace_backup": WORKSPACE_BACKUP,
+                "keyframe_codec": keyframe_codec,
+                "keyframe_raw_bytes": len(raw_key),
+                "keyframe_stored_bytes": key_path.stat().st_size,
                 "image_end": end, "stack_top": STACK_TOP, "headroom_bytes": STACK_TOP - end,
                 "tap_bytes": len(tap), "keyboard_exit": "any key; restores normal video and returns to BASIC"}
     (args.output / "tap_manifest.json").write_text(json.dumps(metadata, indent=2) + "\n")

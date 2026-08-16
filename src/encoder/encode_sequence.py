@@ -648,12 +648,6 @@ def main() -> None:
                 else:
                     frame, hybrid_bytes, selected_cells = rate_control_hybrid(
                         previous, frame, source_rgb, args.max_hybrid_bytes)
-            if auto_profile is not None:
-                frame = apply_plate(frame, auto_profile.plate,
-                                    auto_profile.frame_cells[index])
-                if previous is not None:
-                    payload, _ = encode_hybrid(previous, frame)
-                    hybrid_bytes = len(payload)
             prefix = args.output / f"frame_{index:05d}"
             frame.write(prefix)
             rendered = frame.render()

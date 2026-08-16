@@ -59,6 +59,12 @@ The normal interface is a single command. For a looping 64 KB cartridge:
 python tsvideocodec.py input.gif build/example --format cartridge
 ```
 
+For a whole-clip rather than per-frame rate limit, set
+`--max-hybrid-bytes 0 --clip-delta-bytes N`. The encoder distributes `N` bytes
+across all non-key frames according to source motion while retaining a minimum
+allocation for every frame. `--clip-max-frame-bytes` optionally limits the
+largest individual update.
+
 The initial TAP or cartridge frame uses `--keyframe-codec auto` by default. It selects
 PackBits when that meaningfully reduces the 12 KB bitmap-plus-attribute frame;
 use `raw` or `packbits` to force either representation. During startup the

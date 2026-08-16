@@ -37,6 +37,10 @@ def main() -> None:
     parser.add_argument("--encoder", choices=("python", "native"), default="python")
     parser.add_argument("--max-hybrid-bytes", type=int, default=1400,
                         help="per-frame reconstructed delta budget; zero disables")
+    parser.add_argument("--clip-delta-bytes", type=int, default=0,
+                        help="total byte budget shared across all non-key frames")
+    parser.add_argument("--clip-min-frame-bytes", type=int, default=200)
+    parser.add_argument("--clip-max-frame-bytes", type=int, default=0)
     parser.add_argument("--keyframe-codec", choices=("raw", "packbits", "auto"),
                         default="auto", help="cartridge initial-frame storage")
     parser.add_argument("--dither-mode", choices=("sierra-lite", "legacy"),
@@ -58,6 +62,10 @@ def main() -> None:
         parser.error("--max-frames cannot be negative")
     if args.max_hybrid_bytes < 0:
         parser.error("--max-hybrid-bytes cannot be negative")
+    if args.clip_delta_bytes < 0 or args.clip_min_frame_bytes < 1 or args.clip_max_frame_bytes < 0:
+        parser.error("clip byte budgets must be non-negative and minimum must be positive")
+    if args.clip_delta_bytes and args.max_hybrid_bytes:
+        parser.error("--clip-delta-bytes and --max-hybrid-bytes are mutually exclusive")
     if args.format in ("tap", "both") and not args.loop:
         parser.error("the current TAP player is looping; --no-loop is cartridge-only")
 
@@ -80,6 +88,10 @@ def main() -> None:
         "--dither-mode", args.dither_mode,
         "--max-hybrid-bytes", args.max_hybrid_bytes,
     ]
+    if args.clip_delta_bytes:
+        encoder_args += ["--clip-delta-bytes", args.clip_delta_bytes,
+                         "--clip-min-frame-bytes", args.clip_min_frame_bytes,
+                         "--clip-max-frame-bytes", args.clip_max_frame_bytes]
     if args.auto:
         encoder_args.append("--auto")
     run("src/encoder/encode_sequence.py", *encoder_args)
@@ -127,6 +139,7 @@ def main() -> None:
         "max_frames": args.max_frames, "start_seconds": args.start_seconds,
         "geometry": args.geometry, "encoder": args.encoder, "auto": args.auto,
         "max_hybrid_bytes": args.max_hybrid_bytes,
+        "clip_delta_bytes": args.clip_delta_bytes,
         "keyframe_codec": args.keyframe_codec,
         "transport": args.transport if args.format != "tap" else "tap-raster",
         "loop": args.loop, "artifacts": artifacts,

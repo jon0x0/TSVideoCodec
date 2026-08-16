@@ -229,23 +229,92 @@ def rate_control_planes(previous: ECMFrame, candidate: ECMFrame, source_rgb: np.
     return result, bitmap_bytes, attr_bytes, bitmap_cells, attr_cells, new_age
 
 
+def parse_source_window(value: str) -> tuple[float, float, float]:
+    try:
+        parts = tuple(float(part.strip()) for part in value.split(","))
+    except ValueError as error:
+        raise argparse.ArgumentTypeError("expected X,Y,WIDTH") from error
+    if len(parts) != 3:
+        raise argparse.ArgumentTypeError("expected X,Y,WIDTH")
+    return parts
+
+
+def probe_video_size(video: Path) -> tuple[int, int]:
+    ffprobe = shutil.which("ffprobe")
+    if not ffprobe:
+        raise SystemExit("ffprobe was not found on PATH")
+    result = subprocess.run(
+        [ffprobe, "-v", "error", "-select_streams", "v:0",
+         "-show_entries", "stream=width,height", "-of", "json", str(video)],
+        check=True, capture_output=True, text=True,
+    )
+    streams = json.loads(result.stdout).get("streams", [])
+    if not streams:
+        raise SystemExit("ffprobe found no video stream")
+    return int(streams[0]["width"]), int(streams[0]["height"])
+
+
+def resolve_source_window(
+    source_size: tuple[int, int], requested: tuple[float, float, float], normalized: bool,
+) -> dict[str, int | float | str]:
+    source_width, source_height = source_size
+    req_x, req_y, req_extent = requested
+    if normalized:
+        if not (0 <= req_x < 1 and 0 <= req_y < 1 and req_x < req_extent <= 1):
+            raise ValueError("normalized X,Y must be in [0,1), and RIGHT must be greater than X and at most 1")
+        x = round(req_x * source_width)
+        y = round(req_y * source_height)
+        wanted_width = round((req_extent - req_x) * source_width)
+        mode = "normalized"
+    else:
+        if req_x < 0 or req_y < 0 or req_extent <= 0:
+            raise ValueError("pixel X and Y must be non-negative, and WIDTH positive")
+        if not all(float(value).is_integer() for value in (req_x, req_y, req_extent)):
+            raise ValueError("pixel source-window values must be whole numbers")
+        x, y, wanted_width = int(req_x), int(req_y), int(req_extent)
+        mode = "pixels"
+    if x >= source_width or y >= source_height:
+        raise ValueError("source-window origin is outside the source frame")
+
+    # The requested width is a maximum. Shrink it when necessary so the fixed
+    # upper-left origin still yields a complete 4:3 TS2068 viewport.
+    max_width = min(source_width - x, (source_height - y) * 4 // 3)
+    width = min(wanted_width, max_width)
+    width -= width % 4
+    height = width * 3 // 4
+    if width < 1 or height < 1:
+        raise ValueError("source window is too small after fitting a 4:3 viewport")
+    return {
+        "mode": mode, "source_width": source_width, "source_height": source_height,
+        "requested_x": req_x, "requested_y": req_y,
+        "requested_right" if normalized else "requested_width": req_extent,
+        "x": x, "y": y, "width": width, "height": height,
+        "width_was_reduced": width < wanted_width,
+    }
+
+
 def extract_frames(
     video: Path, directory: Path, fps: float, max_frames: int, start_seconds: float = 0.0,
-    geometry: str = "fit",
+    geometry: str = "fit", source_window: dict[str, int | float | str] | None = None,
 ) -> list[Path]:
     ffmpeg = shutil.which("ffmpeg")
     if not ffmpeg:
         raise SystemExit("ffmpeg was not found on PATH")
+    filters = [f"fps={fps}"]
+    if source_window:
+        filters.append(
+            f"crop={source_window['width']}:{source_window['height']}:"
+            f"{source_window['x']}:{source_window['y']}")
     if geometry == "fit":
-        vf = f"fps={fps},scale=256:192:force_original_aspect_ratio=decrease,pad=256:192:(ow-iw)/2:(oh-ih)/2"
+        filters.append("scale=256:192:force_original_aspect_ratio=decrease,pad=256:192:(ow-iw)/2:(oh-ih)/2")
     elif geometry == "crop":
-        vf = f"fps={fps},scale=256:192:force_original_aspect_ratio=increase,crop=256:192"
+        filters.append("scale=256:192:force_original_aspect_ratio=increase,crop=256:192")
     else:
         raise ValueError("geometry must be 'fit' or 'crop'")
     command = [ffmpeg, "-v", "error"]
     if start_seconds > 0:
         command += ["-ss", f"{start_seconds:.6f}"]
-    command += ["-i", str(video), "-an", "-vf", vf]
+    command += ["-i", str(video), "-an", "-vf", ",".join(filters)]
     if max_frames > 0:
         command += ["-frames:v", str(max_frames)]
     command += [str(directory / "source_%05d.png")]
@@ -287,6 +356,13 @@ def main() -> None:
     )
     parser.add_argument("--keep-source-frames", action="store_true")
     parser.add_argument("--geometry", choices=("fit", "crop"), default="fit")
+    source_window = parser.add_mutually_exclusive_group()
+    source_window.add_argument(
+        "--source-window", type=parse_source_window, metavar="X,Y,RIGHT",
+        help="normalized upper-left X,Y and right edge; output viewport is 4:3")
+    source_window.add_argument(
+        "--source-window-pixels", type=parse_source_window, metavar="X,Y,WIDTH",
+        help="pixel upper-left X,Y and maximum width; output viewport is 4:3")
     chroma = parser.add_mutually_exclusive_group()
     chroma.add_argument("--chroma-weight", type=float, default=1.0)
     chroma.add_argument("--adaptive-chroma", action="store_true")
@@ -336,6 +412,15 @@ def main() -> None:
     parser.add_argument("--clip-max-frame-bytes", type=int, default=0,
                         help="hard per-frame cap for global allocation; zero disables")
     args = parser.parse_args()
+    resolved_source_window = None
+    requested_source_window = args.source_window or args.source_window_pixels
+    if requested_source_window is not None:
+        try:
+            resolved_source_window = resolve_source_window(
+                probe_video_size(args.input), requested_source_window,
+                normalized=args.source_window is not None)
+        except ValueError as error:
+            raise SystemExit(f"invalid source window: {error}") from error
     if args.start_seconds < 0:
         raise SystemExit("--start-seconds must not be negative")
     if args.cyclic_warmup_passes < 0:
@@ -375,7 +460,8 @@ def main() -> None:
         native_workspace = Path(temp_name) / "native"
         native_workspace.mkdir()
         extracted = extract_frames(
-            args.input, Path(temp_name), args.fps, args.max_frames, args.start_seconds, args.geometry
+            args.input, Path(temp_name), args.fps, args.max_frames, args.start_seconds, args.geometry,
+            resolved_source_window,
         )
         if not extracted:
             raise SystemExit("ffmpeg extracted no video frames")
@@ -676,6 +762,7 @@ def main() -> None:
         "fps": args.fps,
         "start_seconds": args.start_seconds,
         "max_frames": args.max_frames,
+        "source_window": resolved_source_window,
         "encoded_frames": len(rows),
         "change_penalty": args.change_penalty,
         "chroma_weight": "adaptive" if args.adaptive_chroma else args.chroma_weight,

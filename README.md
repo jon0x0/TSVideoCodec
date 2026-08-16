@@ -76,6 +76,15 @@ For clips whose source has an intentional discontinuity, use
 `--loop-transition keyframe`. The player replays the original keyframe at the
 boundary instead of storing a last-to-first delta. The default is `delta`.
 
+For motion that should reverse smoothly at its endpoint, add `--bounce` to a
+cartridge build. The player traverses the same reversible delta records forward
+and backward without storing reversed frames or duplicate payload. Endpoint
+frames are not repeated: playback is `0..N-1..1`, then returns seamlessly to
+frame zero using the first delta in reverse. Hybrid deltas are already XOR
+based. With `--transport paired`, bounce mode automatically selects paired-XOR
+records so bitmap and colour remain coupled without using the non-reversible
+replacement records used by ordinary forward paired playback.
+
 The initial TAP or cartridge frame uses `--keyframe-codec auto` by default. It selects
 PackBits when that meaningfully reduces the 12 KB bitmap-plus-attribute frame;
 use `raw` or `packbits` to force either representation. During startup the
@@ -106,6 +115,23 @@ python tsvideocodec.py input.mp4 build/example --format both \
   --start-seconds 3 --fps 12 --max-frames 12 --geometry crop \
   --max-hybrid-bytes 1400 --transport paired --encoder native
 ```
+
+To animate a 4:3 window within a larger movie, give its upper-left position
+and right edge as fractions of the source dimensions:
+
+```sh
+python tsvideocodec.py input.mp4 build/window --format cartridge \
+  --source-window 0.3,0.3,0.6 --fps 12 --max-frames 24
+```
+
+Here, the window starts 30% across and 30% down, and ends 60% across. The
+encoder derives the height needed for the TS2068's 256x192 (4:3) display.
+If that rectangle would cross the right or bottom edge, it reduces the width
+while retaining the requested origin and aspect ratio. The exact resolved
+pixel rectangle is saved in `sequence/run.json`. If source pixel coordinates
+are known, use `--source-window-pixels 576,324,1152` instead. Cropping occurs
+before scaling and automatic clip analysis. Without either option, the full
+source frame is used as before.
 
 Run `python tsvideocodec.py --help` for all options. Pasmo 0.5.5 must be on
 `PATH`, named by `PASMO`, or supplied with `--pasmo`.

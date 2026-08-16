@@ -152,6 +152,8 @@ COPY_FRAME:     LD      A,(IX+0)            ; 1=key table, 2=XOR, 3=hybrid
                 JP      Z,COPY_PACK_KEY
                 CP      8
                 JP      Z,COPY_FIFO_HYBRID
+                CP      9
+                JP      Z,COPY_PAIRED_XOR
                 CP      2
                 JP      Z,COPY_XOR
 COPY_KEY:       LD      A,(IX+0)
@@ -410,6 +412,16 @@ COPY_PAIRED:    LD      A,(IX+0)
                 CALL    DECODE_PAIRED
                 JP      COPY_DONE
 
+COPY_PAIRED_XOR:
+                LD      A,(IX+0)
+                LD      C,$F4
+                LD      B,0
+                OUT     (C),A
+                LD      E,(IX+1)
+                LD      D,(IX+2)
+                CALL    DECODE_PAIRED_XOR
+                JP      COPY_DONE
+
 ; Raster-ordered changed cells. Each record is offset, flags, then replacement
 ; bitmap and/or attribute. The two visible planes are therefore never decoded
 ; in separate passes.
@@ -453,6 +465,50 @@ PAIRED_NEXT:    LD      HL,(PAIRS_LEFT)
                 OR      L
                 JP      NZ,PAIRED_LOOP
                 RET
+
+; Reversible paired cells. Same layout as DECODE_PAIRED, but values are XOR
+; masks rather than replacements, so one record works in either direction.
+DECODE_PAIRED_XOR:
+                LD      A,(DE)
+                INC     DE
+                LD      (PAIRS_LEFT),A
+                LD      A,(DE)
+                INC     DE
+                LD      (PAIRS_LEFT+1),A
+PAIRED_XOR_LOOP:
+                LD      HL,(PAIRS_LEFT)
+                LD      A,H
+                OR      L
+                RET     Z
+                LD      A,(DE)
+                LD      L,A
+                INC     DE
+                LD      A,(DE)
+                LD      H,A
+                INC     DE
+                SET     6,H
+                LD      A,(DE)
+                INC     DE
+                LD      C,A
+                BIT     0,C
+                JR      Z,PAIRED_XOR_ATTRIBUTE
+                LD      A,(DE)
+                INC     DE
+                XOR     (HL)
+                LD      (HL),A
+PAIRED_XOR_ATTRIBUTE:
+                BIT     1,C
+                JR      Z,PAIRED_XOR_NEXT
+                SET     5,H
+                LD      A,(DE)
+                INC     DE
+                XOR     (HL)
+                LD      (HL),A
+PAIRED_XOR_NEXT:
+                LD      HL,(PAIRS_LEFT)
+                DEC     HL
+                LD      (PAIRS_LEFT),HL
+                JR      PAIRED_XOR_LOOP
 
 ; Raster-ordered replacement commands. Each run is confined to one 8x1 row;
 ; bitmap and ECM attribute bytes are updated together when both changed.

@@ -87,8 +87,8 @@ def main() -> None:
         parser.error("--loop-transition keyframe is currently cartridge-only")
     if args.fifo_packing and args.transport != "hybrid":
         parser.error("--fifo-packing currently requires --transport hybrid")
-    if args.bounce and (args.format in ("tap", "both") or not args.loop):
-        parser.error("--bounce currently requires a looping cartridge build")
+    if args.bounce and not args.loop:
+        parser.error("--bounce requires looping playback")
     if args.bounce and args.loop_transition != "delta":
         parser.error("--bounce uses reversible deltas and requires --loop-transition delta")
 
@@ -161,6 +161,8 @@ def main() -> None:
             "--fps-num", rate.numerator, "--fps-den", rate.denominator,
             "--keyframe-codec", args.keyframe_codec,
         ]
+        if args.bounce:
+            tap_args.append("--bounce")
         if args.pasmo:
             tap_args += ["--pasmo", args.pasmo]
         run("src/player/build_video_tap.py", *tap_args)

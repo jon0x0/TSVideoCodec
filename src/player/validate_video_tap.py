@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 from pathlib import Path
 
 from validate_ram_demo import DEFAULT_FUSE, capture, symbol_address
@@ -20,14 +21,18 @@ def main() -> None:
     captured = b"".join(capture(args.fuse, tap, hold, base + offset, 0x400)
                         for base in (0x4000, 0x6000)
                         for offset in range(0, 0x1800, 0x400))
-    pix = sorted(args.sequence.glob("frame_*.pix"))[-1]
+    manifest = json.loads((args.build / "tap_manifest.json").read_text())
+    pix_files = sorted(args.sequence.glob("frame_*.pix"))
+    # A bounce cycle ends at source frame 1 so its first loop delta can return
+    # to frame 0 without duplicating either endpoint.
+    pix = pix_files[1] if manifest.get("bounce") else pix_files[-1]
     expected = pix.read_bytes() + pix.with_suffix(".atr").read_bytes()
     if captured != expected:
         bitmap = sum(a != b for a, b in zip(captured[:0x1800], expected[:0x1800]))
         attrs = sum(a != b for a, b in zip(captured[0x1800:], expected[0x1800:]))
         raise SystemExit(f"Fuse TAP mismatch: bitmap={bitmap}, attributes={attrs}")
     print(f"Fuse reached TAP PAUSE_LAST at ${hold:04X}")
-    print("TAP bitmap and ECM attributes match the encoded last frame exactly")
+    print(f"TAP bitmap and ECM attributes match encoded frame {pix.stem} exactly")
 
 
 if __name__ == "__main__":

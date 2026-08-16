@@ -44,3 +44,24 @@ reference decoder's final frame:
 Measure KEY and DELTA execution paths using Fuse frame/T-state counters:
 
     python src/player/measure_decoder.py
+
+## Contiguous TAP player
+
+`build_video_tap.py` packages a sequence as a self-loading contiguous-RAM TAP.
+The player preserves the BASIC workspace beneath the ECM attribute plane; any
+key restores normal video mode, restores that workspace and the caller's stack,
+and returns from `RANDOMIZE USR`.
+
+Pass `--bounce` to play `0..N-1..1` repeatedly. The TAP stores only N source
+frames and N-1 paired-XOR deltas. The same delta record is applied in each
+direction, coupling bitmap and attribute changes to limit tearing without
+duplicating reverse payload. The manifest reports both stored `frames` and
+`playback_frame_count` (`2*N-2`). Bounce output remains subject to the TAP
+player's safe contiguous-RAM capacity check.
+
+Deterministic Fuse checks cover the completed display state, hardware cadence,
+and keyboard exit restoration:
+
+    python src/player/validate_video_tap.py build/example/tap build/example/sequence
+    python src/player/measure_tap_cadence.py build/example/tap
+    python src/player/validate_tap_exit.py build/example/tap

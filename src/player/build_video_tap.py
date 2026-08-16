@@ -14,7 +14,7 @@ sys.path.insert(0, str(ROOT))
 from toolchain import assemble_pasmo
 from svd_ecm import ECMFrame, screen_offset
 from keyframe_codec import decode_packbits, encode_packbits
-from svd_stream import encode_delta
+from svd_stream import encode_delta, encode_paired_xor_cells
 
 LOAD_ADDRESS = 0x7800
 STACK_TOP = 0xFF00
@@ -56,6 +56,8 @@ def main() -> None:
                         help="Pasmo executable; defaults to PASMO or PATH")
     parser.add_argument("--keyframe-codec", choices=("raw", "packbits", "auto"),
                         default="auto")
+    parser.add_argument("--bounce", action="store_true",
+                        help="reuse paired-XOR deltas for forward/reverse playback")
     args = parser.parse_args()
     args.output.mkdir(parents=True, exist_ok=True)
     frames = []
@@ -63,6 +65,8 @@ def main() -> None:
         frames.append(ECMFrame(pix.read_bytes(), pix.with_suffix(".atr").read_bytes()))
     if not frames:
         raise SystemExit("sequence contains no ECM frames")
+    if args.bounce and len(frames) < 2:
+        raise SystemExit("--bounce requires at least two frames")
 
     raw_key = frames[0].bitmap + frames[0].attributes
     packed_bitmap = encode_packbits(frames[0].bitmap)
@@ -78,11 +82,14 @@ def main() -> None:
     key_path.write_bytes(packed_key if keyframe_codec == "packbits" else raw_key)
     blobs = []
     for index in range(1, len(frames)):
-        blob, _ = encode_delta(frames[index - 1], frames[index])
-        path = args.output / f"frame_{index:03d}.raster"
+        blob, _ = (encode_paired_xor_cells(frames[index - 1], frames[index])
+                   if args.bounce else encode_delta(frames[index - 1], frames[index]))
+        path = args.output / f"frame_{index:03d}.{'pairxor' if args.bounce else 'raster'}"
         path.write_bytes(blob); blobs.append(path)
-    loop_blob, _ = encode_delta(frames[-1], frames[0])
-    (args.output / "loop.raster").write_bytes(loop_blob)
+    loop_blob = b""
+    if not args.bounce:
+        loop_blob, _ = encode_delta(frames[-1], frames[0])
+        (args.output / "loop.raster").write_bytes(loop_blob)
     raster_payload_bytes = key_path.stat().st_size + sum(path.stat().st_size for path in blobs) + len(loop_blob)
     safe_image_bytes = WORKSPACE_BACKUP - LOAD_ADDRESS
     if raster_payload_bytes + 1024 > safe_image_bytes:
@@ -91,20 +98,32 @@ def main() -> None:
             f"safe contiguous image budget is {safe_image_bytes} bytes"
         )
 
-    lines = [f"FRAME_COUNT     EQU     {len(frames)}", "FRAME_TABLE_PTRS:",
-             "                DW      " + ",".join(f"FRAME_{i}_TABLE" for i in range(len(frames))),
+    playback_count = 2 * len(frames) - 2 if args.bounce else len(frames)
+    if playback_count > 255:
+        raise SystemExit("bounce playback exceeds the 255-entry TAP frame table")
+    initial_indices = ([0] + list(range(1, len(frames))) + list(range(len(frames) - 1, 1, -1))
+                       if args.bounce else list(range(len(frames))))
+    loop_indices = ([1] + list(range(1, len(frames))) + list(range(len(frames) - 1, 1, -1))
+                    if args.bounce else None)
+    lines = [f"FRAME_COUNT     EQU     {playback_count}", "FRAME_TABLE_PTRS:",
+             "                DW      " + ",".join(f"FRAME_{i}_TABLE" for i in initial_indices),
              "LOOP_TABLE_PTRS:",
-             "                DW      LOOP_FRAME_TABLE," + ",".join(f"FRAME_{i}_TABLE" for i in range(1, len(frames))),
+             "                DW      " + (",".join(f"FRAME_{i}_TABLE" for i in loop_indices)
+                                           if args.bounce else
+                                           "LOOP_FRAME_TABLE," + ",".join(f"FRAME_{i}_TABLE" for i in range(1, len(frames)))),
              "FRAME_0_TABLE:", f"                DB      {7 if keyframe_codec == 'packbits' else 1}",
              "                DW      FRAME_0_DATA"]
     for index in range(1, len(frames)):
-        lines += [f"FRAME_{index}_TABLE:", "                DB      4",
+        lines += [f"FRAME_{index}_TABLE:", f"                DB      {9 if args.bounce else 4}",
                   f"                DW      FRAME_{index}_DATA"]
-    lines += ["LOOP_FRAME_TABLE:", "                DB      4", "                DW      LOOP_FRAME_DATA",
-              "FRAME_0_DATA:", f'                INCBIN  "{key_path.name}"']
+    if not args.bounce:
+        lines += ["LOOP_FRAME_TABLE:", "                DB      4", "                DW      LOOP_FRAME_DATA"]
+    lines += ["FRAME_0_DATA:", f'                INCBIN  "{key_path.name}"']
     for index in range(1, len(frames)):
-        lines += [f"FRAME_{index}_DATA:", f'                INCBIN  "frame_{index:03d}.raster"']
-    lines += ["LOOP_FRAME_DATA:", '                INCBIN  "loop.raster"']
+        lines += [f"FRAME_{index}_DATA:",
+                  f'                INCBIN  "frame_{index:03d}.{"pairxor" if args.bounce else "raster"}"']
+    if not args.bounce:
+        lines += ["LOOP_FRAME_DATA:", '                INCBIN  "loop.raster"']
     (args.output / "tap_frames.inc").write_text("\n".join(lines) + "\n", encoding="ascii")
     (args.output / "tap_config.inc").write_text(
         f"TICK_NUMERATOR EQU {60 * args.fps_den}\nTICK_DENOMINATOR EQU {args.fps_num}\n",
@@ -135,7 +154,10 @@ def main() -> None:
     tap += tap_block(0xFF, code)
     tap_path = args.output / "svd_video.tap"
     tap_path.write_bytes(tap)
-    metadata = {"format": "TS2068 TAP", "frames": len(frames), "fps_num": args.fps_num,
+    metadata = {"format": "TS2068 TAP", "frames": len(frames),
+                "playback_frame_count": playback_count, "bounce": args.bounce,
+                "delta_format": "paired-xor" if args.bounce else "raster-replacement",
+                "fps_num": args.fps_num,
                 "fps_den": args.fps_den, "load_address": LOAD_ADDRESS, "image_bytes": len(code),
                 "basic_ramtop": BASIC_RAMTOP,
                 "basic_workspace_backup": WORKSPACE_BACKUP,

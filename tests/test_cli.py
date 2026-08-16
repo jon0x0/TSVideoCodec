@@ -54,7 +54,7 @@ def test_one_command_builds_both_outputs(monkeypatch, tmp_path):
     assert manifest["artifacts"]["tap"].endswith("svd_video.tap")
 
 
-def test_bounce_is_a_cartridge_player_option(monkeypatch, tmp_path):
+def test_bounce_is_a_player_option_for_cartridge_and_tap(monkeypatch, tmp_path):
     cli = load_cli()
     source = tmp_path / "input.gif"
     source.write_bytes(b"GIF89a")
@@ -62,10 +62,11 @@ def test_bounce_is_a_cartridge_player_option(monkeypatch, tmp_path):
     monkeypatch.setattr(cli, "run", lambda script, *args: calls.append((script, args)))
     monkeypatch.setattr(sys, "argv", [
         "tsvideocodec.py", str(source), str(tmp_path / "output"),
-        "--format", "cartridge", "--bounce",
+        "--format", "both", "--bounce",
     ])
 
     cli.main()
 
     assert "--bounce" not in calls[0][1]
     assert "--bounce" in calls[2][1]
+    assert "--bounce" in calls[3][1]

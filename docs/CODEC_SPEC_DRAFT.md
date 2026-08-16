@@ -77,9 +77,9 @@ current 19-frame sample this remains within the 12 fps deadline, but its worst
 measured decode is close enough to the limit that further opcodes require
 decoder-cost-aware rate control.
 
-### Paired replacement and paired-XOR cartridge records
+### Paired replacement and paired-XOR player records
 
-The cartridge transport also supports raster-ordered changed-cell lists. A
+The cartridge and TAP transports also support raster-ordered changed-cell lists. A
 paired replacement record stores a 16-bit display-plane offset, flags selecting
 bitmap and/or attribute, and the selected target byte values. It reduces visible
 bitmap/colour mismatch during forward playback but is directional: replaying it
@@ -90,7 +90,7 @@ offset, and flag structure but XOR masks in place of replacement values. Given
 adjacent reconstructed frames A and B and mask D, `A XOR D = B` and
 `B XOR D = A`. A single stored record can therefore be referenced in both table
 directions. For N stored frames, the player presents `2*N-2` positions without
-duplicating frames or delta payload. This is currently a cartridge transport
+duplicating frames or delta payload. This is currently a player transport
 record rather than a frozen SVD v0 stream opcode.
 
 ### Measured sparse-delta experiment

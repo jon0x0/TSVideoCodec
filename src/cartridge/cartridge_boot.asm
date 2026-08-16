@@ -20,7 +20,6 @@ PAIRS_LEFT      EQU     $780A
 PACK_COUNT      EQU     $780C
 PACK_VALUE      EQU     $780D
 FIFO_SLOT       EQU     $780E
-FIFO_END_PAGE   EQU     $780F
 
 START:          DI
                 POP     HL                  ; move AROS return off screen RAM
@@ -268,8 +267,7 @@ COPY_FIFO_HYBRID:
                 CALL    DECODE_FIFO_HYBRID_PLANE
                 JP      COPY_DONE
 
-; A=logical payload slot 0..6. Select its cartridge/shadow mapping and set the
-; page reached after incrementing past that slot's final byte.
+; A=logical payload slot 0..6. Select its cartridge/shadow mapping.
 FIFO_SELECT:    LD      (FIFO_SLOT),A
                 PUSH    HL
                 PUSH    DE
@@ -281,10 +279,6 @@ FIFO_SELECT:    LD      (FIFO_SLOT),A
                 LD      A,(HL)
                 LD      BC,$00F4
                 OUT     (C),A
-                LD      HL,FIFO_END_PAGES
-                ADD     HL,DE
-                LD      A,(HL)
-                LD      (FIFO_END_PAGE),A
                 POP     BC
                 POP     DE
                 POP     HL
@@ -318,28 +312,26 @@ FIFO_SOURCE_A000:
                 LD      DE,$A000
                 RET
 
-; Return the next FIFO byte in A and cross a physical bank only at its end.
-FIFO_GET_BYTE:  LD      A,(DE)
-                INC     DE
-                EX      AF,AF'
-                LD      A,(FIFO_END_PAGE)
-                CP      D
-                CALL    Z,FIFO_NEXT
-                EX      AF,AF'
-                RET
-
+; Direct hybrid decoder with command-boundary bank markers.
+; C1=switch bank, C2=skip one padding byte then switch bank.
 DECODE_FIFO_HYBRID_PLANE:
-                CALL    FIFO_GET_BYTE
+                LD      A,(DE)
+                INC     DE
                 OR      A
                 RET     Z
                 JP      P,FIFO_HYBRID_SKIP
                 CP      $C0
                 JR      Z,FIFO_HYBRID_MASK
+                CP      $C1
+                JR      Z,FIFO_HYBRID_NEXT_BANK
+                CP      $C2
+                JR      Z,FIFO_HYBRID_PADDED_BANK
                 AND     $3F
                 INC     A
                 LD      B,A
 FIFO_HYBRID_LITERAL_LOOP:
-                CALL    FIFO_GET_BYTE
+                LD      A,(DE)
+                INC     DE
                 XOR     (HL)
                 LD      (HL),A
                 INC     HL
@@ -351,18 +343,25 @@ FIFO_HYBRID_SKIP:
                 ADD     HL,BC
                 JR      DECODE_FIFO_HYBRID_PLANE
 FIFO_HYBRID_MASK:
-                CALL    FIFO_GET_BYTE
+                LD      A,(DE)
+                INC     DE
                 LD      C,A
                 LD      B,8
 FIFO_HYBRID_MASK_LOOP:
                 SLA     C
                 JR      NC,FIFO_HYBRID_MASK_NEXT
-                CALL    FIFO_GET_BYTE
+                LD      A,(DE)
+                INC     DE
                 XOR     (HL)
                 LD      (HL),A
 FIFO_HYBRID_MASK_NEXT:
                 INC     HL
                 DJNZ    FIFO_HYBRID_MASK_LOOP
+                JR      DECODE_FIFO_HYBRID_PLANE
+FIFO_HYBRID_PADDED_BANK:
+                INC     DE
+FIFO_HYBRID_NEXT_BANK:
+                CALL    FIFO_NEXT
                 JR      DECODE_FIFO_HYBRID_PLANE
 
 COPY_RASTER:    LD      A,(IX+0)
@@ -607,7 +606,6 @@ COPY_DONE:      LD      A,$10               ; code chunk only; HOME ROM/RAM else
                 RET
 
 FIFO_MASKS:     DB      $11,$12,$10,$10,$30,$50,$90
-FIFO_END_PAGES: DB      $20,$40,$E0,$00,$C0,$E0,$00
 
 BITMAP_ROWS:
                 INCLUDE "bitmap_rows.inc"

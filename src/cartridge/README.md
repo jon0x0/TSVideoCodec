@@ -23,10 +23,13 @@ logical 56 KB stream. It records each frame's starting slot and address and
 advances automatically through cartridge and boot-shadow banks, eliminating
 whole-frame fragmentation and the 8 KB per-frame storage restriction.
 
-The FIFO byte reader is intentionally a separate option: on the 30-frame
-dinosaur measurement it used the same 39,237 payload bytes without stranded
-bank holes, reconstructed the final screen exactly, and measured 42,183–344,888
-T-states per delta versus 21,586–183,052 for bank-local hybrid decoding.
+The FIFO packer splits hybrid literals only when they touch a bank edge and
+uses reserved `$C1/$C2` commands to switch banks. Normal compressed bytes are
+decoded directly from cartridge memory with no per-byte boundary check. On the
+30-frame dinosaur measurement it used 39,247 payload bytes, including only 10
+bytes of boundary markers/padding, and reconstructed the final screen exactly.
+It measured 23,364–189,319 T-states per delta with an 85,731 mean, versus
+21,586–183,052 and an 81,853 mean for bank-local hybrid decoding.
 
 The unrestricted profile and optional CBR-style profile are separate. Passing
 `--max-hybrid-bytes 1800` to the sequence encoder currently fits all 25 source

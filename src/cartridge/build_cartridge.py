@@ -14,6 +14,7 @@ sys.path.insert(0, str(ROOT))
 from toolchain import assemble_pasmo
 from svd_ecm import ECMFrame
 from keyframe_codec import decode_packbits, encode_packbits
+from fifo_hybrid import pack_fifo_hybrid
 from svd_stream import encode_delta, encode_hybrid, encode_paired_cells, encode_row_hybrid
 from svd_ecm import screen_offset
 CHUNK_SIZE = 0x2000
@@ -162,11 +163,12 @@ def main() -> None:
     if args.fifo_packing:
         cursor = key_stored_size
         for index, blob in blobs:
-            if cursor + len(blob) > capacity:
+            stored_blob = pack_fifo_hybrid(blob, cursor)
+            if cursor + len(stored_blob) > capacity:
                 raise SystemExit(f"frame {index} exceeds cartridge FIFO capacity")
-            payload[cursor:cursor + len(blob)] = blob
-            placements[index] = (cursor, blob)
-            cursor += len(blob)
+            payload[cursor:cursor + len(stored_blob)] = stored_blob
+            placements[index] = (cursor, stored_blob)
+            cursor += len(stored_blob)
     else:
         # Best-fit decreasing retains the fast no-bank-crossing decoder path.
         pack_items.extend(blobs)
@@ -206,7 +208,9 @@ def main() -> None:
                                 "update_bytes": len(blob)})
         else:
             loop_record = ((offset // CHUNK_SIZE, source[1]) if args.fifo_packing else source[:2])
-    used_payload = key_stored_size + sum(len(blob) for _, blob in blobs)
+    used_payload = (key_stored_size + sum(len(placements[index][1]) for index, _ in blobs)
+                    if args.fifo_packing else
+                    key_stored_size + sum(len(blob) for _, blob in blobs))
 
     lines = [f"FRAME_COUNT     EQU     {len(frames)}", "FRAME_TABLE_PTRS:"]
     lines.append("                DW      " + ",".join(f"FRAME_{i}_TABLE" for i in range(len(frames))))
@@ -312,7 +316,10 @@ def main() -> None:
         "paired_cell_updates": args.paired_cell_updates,
         "reverse_paired_cell_updates": args.reverse_paired_cell_updates,
         "fifo_packing": args.fifo_packing,
-        "loop_delta_bytes": len(loop_blob) if loop_blob is not None else 0,
+        "loop_delta_bytes": (len(placements[len(frames)][1]) if args.fifo_packing and loop_blob is not None
+                             else len(loop_blob) if loop_blob is not None else 0),
+        "fifo_marker_bytes": (used_payload - key_stored_size - sum(len(blob) for _, blob in blobs)
+                              if args.fifo_packing else 0),
         "loop_pause_frames": args.loop_pause_frames,
         "interrupt_hz": 60,
         "tick_numerator": 60 * stream_metadata["fps_den"],

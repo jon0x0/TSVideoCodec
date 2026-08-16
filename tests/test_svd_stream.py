@@ -6,6 +6,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parents[1] / "src" / "encoder"))
 from svd_ecm import ECMFrame, PLANE_SIZE, screen_offset
 from keyframe_codec import decode_packbits, encode_packbits
+from fifo_hybrid import NEXT_BANK, NEXT_BANK_PADDED, pack_fifo_hybrid, remove_fifo_markers
 from svd_stream import (decode_delta, decode_hybrid, decode_paired_cells, decode_sparse,
                         decode_stream, decode_xor, encode_delta, encode_hybrid,
                         encode_paired_cells, encode_sparse, encode_stream, encode_xor)
@@ -123,3 +124,13 @@ def test_keyframe_packbits_round_trip_and_bounds():
     encoded = encode_packbits(source)
     assert decode_packbits(encoded, len(source)) == source
     assert len(encode_packbits(bytes(range(256)) * 24)) < 0x2000
+
+
+def test_command_aware_fifo_crosses_bank_without_per_byte_wrapping():
+    previous = ECMFrame(bytes(6144), bytes(6144))
+    current = ECMFrame(bytes((index * 37 + 1) & 0xFF for index in range(6144)),
+                       bytes((index * 19 + 3) & 0xFF for index in range(6144)))
+    payload, _ = encode_hybrid(previous, current)
+    packed = pack_fifo_hybrid(payload, 0x1FF0)
+    assert NEXT_BANK in packed or NEXT_BANK_PADDED in packed
+    assert decode_hybrid(previous, remove_fifo_markers(packed)) == current

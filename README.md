@@ -68,8 +68,9 @@ largest individual update.
 Hybrid cartridge builds can additionally use `--transport hybrid
 --fifo-packing`. This treats all seven media banks as one logical 57,344-byte
 stream, so frames may cross bank boundaries and no capacity is lost to
-whole-frame bin packing. The original bank-local path remains the default
-because it decodes faster.
+whole-frame bin packing. Reserved command-boundary markers switch banks without
+adding a boundary check to every compressed byte. The original bank-local path
+remains the default because it is still marginally faster.
 
 The initial TAP or cartridge frame uses `--keyframe-codec auto` by default. It selects
 PackBits when that meaningfully reduces the 12 KB bitmap-plus-attribute frame;

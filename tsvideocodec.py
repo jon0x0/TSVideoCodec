@@ -45,6 +45,8 @@ def main() -> None:
                         default="auto", help="cartridge initial-frame storage")
     parser.add_argument("--dither-mode", choices=("sierra-lite", "legacy"),
                         default="sierra-lite")
+    parser.add_argument("--temporal-attr-penalty", type=float, default=0.01)
+    parser.add_argument("--temporal-pixel-penalty", type=float, default=0.01)
     parser.add_argument("--auto", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--transport",
                         choices=("hybrid", "paired", "row-hybrid", "raster"),
@@ -53,6 +55,8 @@ def main() -> None:
     parser.add_argument("--fifo-packing", action="store_true",
                         help="pack hybrid cartridge deltas contiguously across banks")
     parser.add_argument("--loop", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--loop-transition", choices=("delta", "keyframe"), default="delta",
+                        help="last-to-first delta or replay the original keyframe")
     parser.add_argument("--loop-pause-frames", type=int, default=0)
     parser.add_argument("--pasmo", default=None,
                         help="Pasmo executable; defaults to PASMO or PATH")
@@ -70,6 +74,8 @@ def main() -> None:
         parser.error("--clip-delta-bytes and --max-hybrid-bytes are mutually exclusive")
     if args.format in ("tap", "both") and not args.loop:
         parser.error("the current TAP player is looping; --no-loop is cartridge-only")
+    if args.format in ("tap", "both") and args.loop_transition == "keyframe":
+        parser.error("--loop-transition keyframe is currently cartridge-only")
     if args.fifo_packing and args.transport != "hybrid":
         parser.error("--fifo-packing currently requires --transport hybrid")
 
@@ -90,6 +96,8 @@ def main() -> None:
         "--geometry", args.geometry,
         "--encoder", args.encoder,
         "--dither-mode", args.dither_mode,
+        "--temporal-attr-penalty", args.temporal_attr_penalty,
+        "--temporal-pixel-penalty", args.temporal_pixel_penalty,
         "--max-hybrid-bytes", args.max_hybrid_bytes,
     ]
     if args.clip_delta_bytes:
@@ -107,10 +115,10 @@ def main() -> None:
             "--delta-format", "hybrid")
         cartridge_args: list[object] = [sequence, stream, output / "cartridge"]
         cartridge_args += ["--keyframe-codec", args.keyframe_codec]
-        if args.loop:
+        if args.loop and args.loop_transition == "delta":
             cartridge_args += ["--seamless-loop", "--loop-pause-frames",
                                args.loop_pause_frames]
-        else:
+        elif not args.loop:
             cartridge_args.append("--stop-at-end")
         transport_flag = {
             "hybrid": None,
@@ -145,11 +153,14 @@ def main() -> None:
         "max_frames": args.max_frames, "start_seconds": args.start_seconds,
         "geometry": args.geometry, "encoder": args.encoder, "auto": args.auto,
         "max_hybrid_bytes": args.max_hybrid_bytes,
+        "temporal_attr_penalty": args.temporal_attr_penalty,
+        "temporal_pixel_penalty": args.temporal_pixel_penalty,
         "clip_delta_bytes": args.clip_delta_bytes,
         "keyframe_codec": args.keyframe_codec,
         "transport": args.transport if args.format != "tap" else "tap-raster",
         "fifo_packing": args.fifo_packing,
-        "loop": args.loop, "artifacts": artifacts,
+        "loop": args.loop, "loop_transition": args.loop_transition,
+        "artifacts": artifacts,
     }
     (output / "build.json").write_text(
         json.dumps(manifest, indent=2) + "\n", encoding="utf-8")

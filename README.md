@@ -72,6 +72,10 @@ whole-frame bin packing. Reserved command-boundary markers switch banks without
 adding a boundary check to every compressed byte. The original bank-local path
 remains the default because it is still marginally faster.
 
+For clips whose source has an intentional discontinuity, use
+`--loop-transition keyframe`. The player replays the original keyframe at the
+boundary instead of storing a last-to-first delta. The default is `delta`.
+
 The initial TAP or cartridge frame uses `--keyframe-codec auto` by default. It selects
 PackBits when that meaningfully reduces the 12 KB bitmap-plus-attribute frame;
 use `raw` or `packbits` to force either representation. During startup the

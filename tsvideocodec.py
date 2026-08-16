@@ -50,6 +50,8 @@ def main() -> None:
                         choices=("hybrid", "paired", "row-hybrid", "raster"),
                         default="paired",
                         help="cartridge update transport")
+    parser.add_argument("--fifo-packing", action="store_true",
+                        help="pack hybrid cartridge deltas contiguously across banks")
     parser.add_argument("--loop", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--loop-pause-frames", type=int, default=0)
     parser.add_argument("--pasmo", default=None,
@@ -68,6 +70,8 @@ def main() -> None:
         parser.error("--clip-delta-bytes and --max-hybrid-bytes are mutually exclusive")
     if args.format in ("tap", "both") and not args.loop:
         parser.error("the current TAP player is looping; --no-loop is cartridge-only")
+    if args.fifo_packing and args.transport != "hybrid":
+        parser.error("--fifo-packing currently requires --transport hybrid")
 
     source = args.input.resolve()
     if not source.is_file():
@@ -116,6 +120,8 @@ def main() -> None:
         }[args.transport]
         if transport_flag:
             cartridge_args.append(transport_flag)
+        if args.fifo_packing:
+            cartridge_args.append("--fifo-packing")
         if args.pasmo:
             cartridge_args += ["--pasmo", args.pasmo]
         run("src/cartridge/build_cartridge.py", *cartridge_args)
@@ -142,6 +148,7 @@ def main() -> None:
         "clip_delta_bytes": args.clip_delta_bytes,
         "keyframe_codec": args.keyframe_codec,
         "transport": args.transport if args.format != "tap" else "tap-raster",
+        "fifo_packing": args.fifo_packing,
         "loop": args.loop, "artifacts": artifacts,
     }
     (output / "build.json").write_text(

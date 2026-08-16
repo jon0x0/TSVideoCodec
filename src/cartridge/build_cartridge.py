@@ -43,6 +43,8 @@ def main() -> None:
                         help="use bottom-to-top replacement cells with paired bitmap/colour")
     parser.add_argument("--frame-limit", type=int, default=0,
                         help="diagnostic limit; zero uses the complete sequence")
+    parser.add_argument("--fifo-packing", action="store_true",
+                        help="pack hybrid deltas contiguously across cartridge banks")
     parser.add_argument("--keyframe-codec", choices=("raw", "packbits", "auto"), default="auto",
                         help="initial frame storage (auto uses compression only when worthwhile)")
     args = parser.parse_args()
@@ -51,6 +53,9 @@ def main() -> None:
     if sum((args.raster_updates, args.row_hybrid_updates, args.paired_cell_updates,
             args.reverse_paired_cell_updates)) > 1:
         raise SystemExit("update transport options are mutually exclusive")
+    if args.fifo_packing and any((args.raster_updates, args.row_hybrid_updates,
+                                  args.paired_cell_updates, args.reverse_paired_cell_updates)):
+        raise SystemExit("--fifo-packing currently supports hybrid transport only")
     if not 0 <= args.decode_tick_compensation <= 255:
         raise SystemExit("--decode-tick-compensation must fit in one byte")
     args.output.mkdir(parents=True, exist_ok=True)
@@ -103,6 +108,8 @@ def main() -> None:
     keyframe_codec = args.keyframe_codec
     if keyframe_codec == "auto":
         keyframe_codec = "packbits" if compressed_key_size + 256 < 0x3000 else "raw"
+    if args.fifo_packing and keyframe_codec == "packbits" and compressed_key_size > CHUNK_SIZE:
+        keyframe_codec = "raw"
     pack_items = []
     if keyframe_codec == "raw":
         payload[:0x3000] = frames[0]
@@ -113,7 +120,14 @@ def main() -> None:
             for slot in range(2, len(STREAM_CHUNKS))]
         key_stored_size = 0x3000
     else:
-        pack_items.extend([("key_bitmap", key_planes[0]), ("key_attributes", key_planes[1])])
+        if args.fifo_packing:
+            payload[:len(key_planes[0])] = key_planes[0]
+            payload[len(key_planes[0]):compressed_key_size] = key_planes[1]
+            frame_records.append(("key_packbits", [
+                segments(0, 0, len(key_planes[0]))[0][:2],
+                segments(len(key_planes[0]), 0, len(key_planes[1]))[0][:2]]))
+        else:
+            pack_items.extend([("key_bitmap", key_planes[0]), ("key_attributes", key_planes[1])])
         slots = [[slot * CHUNK_SIZE, (slot + 1) * CHUNK_SIZE]
                  for slot in range(len(STREAM_CHUNKS))]
         key_stored_size = compressed_key_size
@@ -144,22 +158,30 @@ def main() -> None:
                         encode_hybrid(previous, first))
         blobs.append((len(frames), loop_blob))
 
-    # Best-fit decreasing placement keeps each delta in one source bank while
-    # reclaiming holes that chronological packing leaves behind.
     placements = {}
-    pack_items.extend(blobs)
-    for index, blob in sorted(pack_items, key=lambda item: len(item[1]), reverse=True):
-        candidates = [(end - start, slot_index) for slot_index, (start, end) in enumerate(slots)
-                      if end - start >= len(blob)]
-        if not candidates:
-            raise SystemExit(f"frame {index} exceeds cartridge capacity")
-        _, slot_index = min(candidates)
-        offset = slots[slot_index][0]
-        payload[offset:offset + len(blob)] = blob
-        slots[slot_index][0] += len(blob)
-        placements[index] = (offset, blob)
+    if args.fifo_packing:
+        cursor = key_stored_size
+        for index, blob in blobs:
+            if cursor + len(blob) > capacity:
+                raise SystemExit(f"frame {index} exceeds cartridge FIFO capacity")
+            payload[cursor:cursor + len(blob)] = blob
+            placements[index] = (cursor, blob)
+            cursor += len(blob)
+    else:
+        # Best-fit decreasing retains the fast no-bank-crossing decoder path.
+        pack_items.extend(blobs)
+        for index, blob in sorted(pack_items, key=lambda item: len(item[1]), reverse=True):
+            candidates = [(end - start, slot_index) for slot_index, (start, end) in enumerate(slots)
+                          if end - start >= len(blob)]
+            if not candidates:
+                raise SystemExit(f"frame {index} exceeds cartridge capacity")
+            _, slot_index = min(candidates)
+            offset = slots[slot_index][0]
+            payload[offset:offset + len(blob)] = blob
+            slots[slot_index][0] += len(blob)
+            placements[index] = (offset, blob)
 
-    if keyframe_codec == "packbits":
+    if keyframe_codec == "packbits" and not args.fifo_packing:
         key_records = []
         for key in ("key_bitmap", "key_attributes"):
             offset, blob = placements[key]
@@ -171,7 +193,8 @@ def main() -> None:
         offset, blob = placements[index]
         source = segments(offset, 0, len(blob))[0]
         if index < len(frames):
-            frame_records.append(("paired" if (args.paired_cell_updates or
+            frame_records.append(("fifo_hybrid" if args.fifo_packing else
+                                  "paired" if (args.paired_cell_updates or
                                                 args.reverse_paired_cell_updates) else
                                   "raster" if args.raster_updates else
                                   "row_hybrid" if args.row_hybrid_updates else "hybrid", source[:2]))
@@ -182,7 +205,7 @@ def main() -> None:
                                                "ROW_HYBRID" if args.row_hybrid_updates else "HYBRID"),
                                 "update_bytes": len(blob)})
         else:
-            loop_record = source[:2]
+            loop_record = ((offset // CHUNK_SIZE, source[1]) if args.fifo_packing else source[:2])
     used_payload = key_stored_size + sum(len(blob) for _, blob in blobs)
 
     lines = [f"FRAME_COUNT     EQU     {len(frames)}", "FRAME_TABLE_PTRS:"]
@@ -199,6 +222,10 @@ def main() -> None:
             lines.append("                DB      7")
             for mask, source in records:
                 lines.append(f"                DB      ${mask:02X}\n                DW      ${source:04X}")
+        elif kind == "fifo_hybrid":
+            offset, _ = placements[index]
+            source = segments(offset, 0, 1)[0][1]
+            lines.append(f"                DB      8,{offset // CHUNK_SIZE}\n                DW      ${source:04X}")
         else:
             mask, source = records
             record_type = 6 if kind == "paired" else 4 if kind == "raster" else 5 if kind == "row_hybrid" else 3
@@ -209,7 +236,7 @@ def main() -> None:
                      ",".join(f"FRAME_{i}_TABLE" for i in range(1, len(frames))))
         mask, source = loop_record
         lines.append("LOOP_FRAME_TABLE:")
-        loop_type = 6 if (args.paired_cell_updates or args.reverse_paired_cell_updates) else 4 if args.raster_updates else 5 if args.row_hybrid_updates else 3
+        loop_type = 8 if args.fifo_packing else 6 if (args.paired_cell_updates or args.reverse_paired_cell_updates) else 4 if args.raster_updates else 5 if args.row_hybrid_updates else 3
         lines.append(f"                DB      {loop_type},${mask:02X}\n                DW      ${source:04X}")
     else:
         lines.append("LOOP_TABLE_PTRS EQU FRAME_TABLE_PTRS")
@@ -284,6 +311,7 @@ def main() -> None:
         "row_hybrid_updates": args.row_hybrid_updates,
         "paired_cell_updates": args.paired_cell_updates,
         "reverse_paired_cell_updates": args.reverse_paired_cell_updates,
+        "fifo_packing": args.fifo_packing,
         "loop_delta_bytes": len(loop_blob) if loop_blob is not None else 0,
         "loop_pause_frames": args.loop_pause_frames,
         "interrupt_hz": 60,

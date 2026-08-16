@@ -23,6 +23,7 @@ def test_one_command_builds_both_outputs(monkeypatch, tmp_path):
     monkeypatch.setattr(sys, "argv", [
         "tsvideocodec.py", str(source), str(output), "--format", "both",
         "--fps", "12.5", "--max-frames", "8", "--geometry", "crop",
+        "--source-window", "0.3,0.3,0.6",
         "--encoder", "native", "--transport", "row-hybrid",
         "--pasmo", "custom-pasmo",
     ])
@@ -35,6 +36,9 @@ def test_one_command_builds_both_outputs(monkeypatch, tmp_path):
         "src/cartridge/build_cartridge.py",
         "src/player/build_video_tap.py",
     ]
+    encoder_args = calls[0][1]
+    window_index = encoder_args.index("--source-window")
+    assert encoder_args[window_index + 1] == "0.3,0.3,0.6"
     cartridge_args = calls[2][1]
     assert "--row-hybrid-updates" in cartridge_args
     assert cartridge_args[-2:] == ("--pasmo", "custom-pasmo")
@@ -44,6 +48,24 @@ def test_one_command_builds_both_outputs(monkeypatch, tmp_path):
 
     manifest = json.loads((output / "build.json").read_text(encoding="utf-8"))
     assert manifest["format"] == "both"
+    assert manifest["source_window"] == "0.3,0.3,0.6"
     assert (manifest["fps_num"], manifest["fps_den"]) == (25, 2)
     assert manifest["artifacts"]["dck"].endswith("svd_video_64k.dck")
     assert manifest["artifacts"]["tap"].endswith("svd_video.tap")
+
+
+def test_bounce_is_a_cartridge_player_option(monkeypatch, tmp_path):
+    cli = load_cli()
+    source = tmp_path / "input.gif"
+    source.write_bytes(b"GIF89a")
+    calls = []
+    monkeypatch.setattr(cli, "run", lambda script, *args: calls.append((script, args)))
+    monkeypatch.setattr(sys, "argv", [
+        "tsvideocodec.py", str(source), str(tmp_path / "output"),
+        "--format", "cartridge", "--bounce",
+    ])
+
+    cli.main()
+
+    assert "--bounce" not in calls[0][1]
+    assert "--bounce" in calls[2][1]

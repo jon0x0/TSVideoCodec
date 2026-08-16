@@ -77,6 +77,22 @@ current 19-frame sample this remains within the 12 fps deadline, but its worst
 measured decode is close enough to the limit that further opcodes require
 decoder-cost-aware rate control.
 
+### Paired replacement and paired-XOR cartridge records
+
+The cartridge transport also supports raster-ordered changed-cell lists. A
+paired replacement record stores a 16-bit display-plane offset, flags selecting
+bitmap and/or attribute, and the selected target byte values. It reduces visible
+bitmap/colour mismatch during forward playback but is directional: replaying it
+does not reconstruct the previous frame.
+
+Bounce playback uses record type 9, paired-XOR cells, with the same count,
+offset, and flag structure but XOR masks in place of replacement values. Given
+adjacent reconstructed frames A and B and mask D, `A XOR D = B` and
+`B XOR D = A`. A single stored record can therefore be referenced in both table
+directions. For N stored frames, the player presents `2*N-2` positions without
+duplicating frames or delta payload. This is currently a cartridge transport
+record rather than a frozen SVD v0 stream opcode.
+
 ### Measured sparse-delta experiment
 
 Frame type 4 stores two counted lists of absolute-address/value records: bitmap
@@ -112,3 +128,8 @@ Use periodic or scene-change keyframes as needed for random access/recovery and 
 
 ## Cartridge packing
 Keep stream commands from awkwardly crossing 8K source-bank boundaries, or define a cheap explicit bank continuation mechanism. The desktop packer can spend space to make the Z80 decoder faster.
+
+The implemented optional FIFO hybrid transport takes the latter approach. It
+packs media contiguously across all seven 8 KB media banks and inserts reserved
+continuation markers only at command boundaries. The decoder keeps a logical
+bank-slot/address cursor, so no capacity is lost to whole-frame bin packing.

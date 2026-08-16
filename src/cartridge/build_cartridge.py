@@ -15,10 +15,18 @@ from toolchain import assemble_pasmo
 from svd_ecm import ECMFrame
 from keyframe_codec import decode_packbits, encode_packbits
 from fifo_hybrid import pack_fifo_hybrid
-from svd_stream import encode_delta, encode_hybrid, encode_paired_cells, encode_row_hybrid
+from svd_stream import (encode_delta, encode_hybrid, encode_paired_cells,
+                        encode_paired_xor_cells, encode_row_hybrid)
 from svd_ecm import screen_offset
 CHUNK_SIZE = 0x2000
 STREAM_CHUNKS = (0, 1, 2, 3, 5, 6, 7)
+
+
+def bounce_table_indices(frame_count: int, initial: bool) -> list[int]:
+    if frame_count < 2:
+        raise ValueError("bounce playback requires at least two frames")
+    prefix = [0] if initial else [1]
+    return prefix + list(range(1, frame_count)) + list(range(frame_count - 1, 1, -1))
 
 
 def main() -> None:
@@ -30,6 +38,8 @@ def main() -> None:
                         help="Pasmo executable; defaults to PASMO or PATH")
     parser.add_argument("--loop-pause-frames", type=int, default=60)
     parser.add_argument("--seamless-loop", action="store_true")
+    parser.add_argument("--bounce", action="store_true",
+                        help="reuse XOR deltas in reverse for forward/reverse playback")
     parser.add_argument("--stop-at-end", action="store_true",
                         help="hold the final frame indefinitely instead of restarting")
     parser.add_argument("--decode-tick-compensation", type=int, default=0,
@@ -51,6 +61,8 @@ def main() -> None:
     args = parser.parse_args()
     if args.stop_at_end and args.seamless_loop:
         raise SystemExit("--stop-at-end and --seamless-loop are mutually exclusive")
+    if args.bounce and (args.stop_at_end or args.seamless_loop):
+        raise SystemExit("--bounce is mutually exclusive with --stop-at-end and --seamless-loop")
     if sum((args.raster_updates, args.row_hybrid_updates, args.paired_cell_updates,
             args.reverse_paired_cell_updates)) > 1:
         raise SystemExit("update transport options are mutually exclusive")
@@ -138,12 +150,17 @@ def main() -> None:
     for index in range(1, len(frames)):
         previous = ECMFrame(frames[index - 1][:0x1800], frames[index - 1][0x1800:])
         current = ECMFrame(frames[index][:0x1800], frames[index][0x1800:])
-        blob, _ = (encode_paired_cells(previous, current,
-                                       reverse=args.reverse_paired_cell_updates)
-                   if (args.paired_cell_updates or args.reverse_paired_cell_updates) else
-                   encode_delta(previous, current) if args.raster_updates else
-                   encode_row_hybrid(previous, current) if args.row_hybrid_updates else
-                   encode_hybrid(previous, current))
+        if args.bounce and (args.paired_cell_updates or args.reverse_paired_cell_updates):
+            blob, _ = encode_paired_xor_cells(previous, current)
+        elif args.paired_cell_updates or args.reverse_paired_cell_updates:
+            blob, _ = encode_paired_cells(previous, current,
+                                          reverse=args.reverse_paired_cell_updates)
+        elif args.raster_updates:
+            blob, _ = encode_delta(previous, current)
+        elif args.row_hybrid_updates:
+            blob, _ = encode_row_hybrid(previous, current)
+        else:
+            blob, _ = encode_hybrid(previous, current)
         if len(blob) > CHUNK_SIZE:
             raise SystemExit(f"frame {index} compressed delta exceeds one bank")
         blobs.append((index, blob))
@@ -196,12 +213,16 @@ def main() -> None:
         source = segments(offset, 0, len(blob))[0]
         if index < len(frames):
             frame_records.append(("fifo_hybrid" if args.fifo_packing else
+                                  "paired_xor" if args.bounce and (args.paired_cell_updates or
+                                                                    args.reverse_paired_cell_updates) else
                                   "paired" if (args.paired_cell_updates or
                                                 args.reverse_paired_cell_updates) else
                                   "raster" if args.raster_updates else
                                   "row_hybrid" if args.row_hybrid_updates else "hybrid", source[:2]))
             frame_stats.append({"frame": index,
-                                "frame_type": ("PAIRED_CELLS_REVERSE" if args.reverse_paired_cell_updates else
+                                "frame_type": ("PAIRED_XOR_CELLS" if args.bounce and
+                                                                    (args.paired_cell_updates or args.reverse_paired_cell_updates) else
+                                               "PAIRED_CELLS_REVERSE" if args.reverse_paired_cell_updates else
                                                "PAIRED_CELLS" if args.paired_cell_updates else
                                                "RASTER" if args.raster_updates else
                                                "ROW_HYBRID" if args.row_hybrid_updates else "HYBRID"),
@@ -212,8 +233,15 @@ def main() -> None:
                     if args.fifo_packing else
                     key_stored_size + sum(len(blob) for _, blob in blobs))
 
-    lines = [f"FRAME_COUNT     EQU     {len(frames)}", "FRAME_TABLE_PTRS:"]
-    lines.append("                DW      " + ",".join(f"FRAME_{i}_TABLE" for i in range(len(frames))))
+    if args.bounce and len(frames) < 2:
+        raise SystemExit("--bounce requires at least two frames")
+    playback_count = 2 * len(frames) - 2 if args.bounce else len(frames)
+    if playback_count > 255:
+        raise SystemExit("bounce playback exceeds the 255-entry cartridge frame table")
+    lines = [f"FRAME_COUNT     EQU     {playback_count}", "FRAME_TABLE_PTRS:"]
+    initial_indices = (bounce_table_indices(len(frames), True) if args.bounce
+                       else list(range(len(frames))))
+    lines.append("                DW      " + ",".join(f"FRAME_{i}_TABLE" for i in initial_indices))
     for index, (kind, records) in enumerate(frame_records):
         lines.append(f"FRAME_{index}_TABLE:")
         if kind == "key":
@@ -232,9 +260,13 @@ def main() -> None:
             lines.append(f"                DB      8,{offset // CHUNK_SIZE}\n                DW      ${source:04X}")
         else:
             mask, source = records
-            record_type = 6 if kind == "paired" else 4 if kind == "raster" else 5 if kind == "row_hybrid" else 3
+            record_type = 9 if kind == "paired_xor" else 6 if kind == "paired" else 4 if kind == "raster" else 5 if kind == "row_hybrid" else 3
             lines.append(f"                DB      {record_type},${mask:02X}\n                DW      ${source:04X}")
-    if args.seamless_loop:
+    if args.bounce:
+        loop_indices = bounce_table_indices(len(frames), False)
+        lines.append("LOOP_TABLE_PTRS:")
+        lines.append("                DW      " + ",".join(f"FRAME_{i}_TABLE" for i in loop_indices))
+    elif args.seamless_loop:
         lines.append("LOOP_TABLE_PTRS:")
         lines.append("                DW      LOOP_FRAME_TABLE," +
                      ",".join(f"FRAME_{i}_TABLE" for i in range(1, len(frames))))
@@ -300,7 +332,9 @@ def main() -> None:
         "playback": (
             "banked hybrid bitmap/attribute delta streams, stop on final frame"
             if args.stop_at_end else
-            ("banked hybrid bitmap/attribute delta streams, seamless loop"
+            ("banked reversible-delta forward/reverse bounce loop"
+             if args.bounce else
+             "banked hybrid bitmap/attribute delta streams, seamless loop"
              if args.seamless_loop and args.loop_pause_frames == 0
              else f"banked hybrid bitmap/attribute delta streams, {args.loop_pause_frames}-frame loop pause")
         ),
@@ -309,6 +343,8 @@ def main() -> None:
         "keyframe_raw_bytes": 0x3000,
         "keyframe_stored_bytes": key_stored_size,
         "seamless_loop": args.seamless_loop,
+        "bounce": args.bounce,
+        "playback_frame_count": playback_count,
         "stop_at_end": args.stop_at_end,
         "decode_tick_compensation": args.decode_tick_compensation,
         "raster_updates": args.raster_updates,

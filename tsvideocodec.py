@@ -32,8 +32,17 @@ def main() -> None:
     parser.add_argument("--fps", type=float, default=12.0)
     parser.add_argument("--max-frames", type=int, default=12,
                         help="zero selects every source frame")
+    parser.add_argument("--bounce", action="store_true",
+                        help="play forward then reverse without duplicate endpoints")
     parser.add_argument("--start-seconds", type=float, default=0.0)
     parser.add_argument("--geometry", choices=("fit", "crop"), default="fit")
+    source_window = parser.add_mutually_exclusive_group()
+    source_window.add_argument(
+        "--source-window", metavar="X,Y,RIGHT",
+        help="normalized upper-left X,Y and right edge; viewport is 4:3")
+    source_window.add_argument(
+        "--source-window-pixels", metavar="X,Y,WIDTH",
+        help="pixel upper-left X,Y and maximum width; viewport is 4:3")
     parser.add_argument("--encoder", choices=("python", "native"), default="python")
     parser.add_argument("--max-hybrid-bytes", type=int, default=1400,
                         help="per-frame reconstructed delta budget; zero disables")
@@ -78,6 +87,10 @@ def main() -> None:
         parser.error("--loop-transition keyframe is currently cartridge-only")
     if args.fifo_packing and args.transport != "hybrid":
         parser.error("--fifo-packing currently requires --transport hybrid")
+    if args.bounce and (args.format in ("tap", "both") or not args.loop):
+        parser.error("--bounce currently requires a looping cartridge build")
+    if args.bounce and args.loop_transition != "delta":
+        parser.error("--bounce uses reversible deltas and requires --loop-transition delta")
 
     source = args.input.resolve()
     if not source.is_file():
@@ -100,6 +113,10 @@ def main() -> None:
         "--temporal-pixel-penalty", args.temporal_pixel_penalty,
         "--max-hybrid-bytes", args.max_hybrid_bytes,
     ]
+    if args.source_window:
+        encoder_args += ["--source-window", args.source_window]
+    elif args.source_window_pixels:
+        encoder_args += ["--source-window-pixels", args.source_window_pixels]
     if args.clip_delta_bytes:
         encoder_args += ["--clip-delta-bytes", args.clip_delta_bytes,
                          "--clip-min-frame-bytes", args.clip_min_frame_bytes,
@@ -115,7 +132,9 @@ def main() -> None:
             "--delta-format", "hybrid")
         cartridge_args: list[object] = [sequence, stream, output / "cartridge"]
         cartridge_args += ["--keyframe-codec", args.keyframe_codec]
-        if args.loop and args.loop_transition == "delta":
+        if args.bounce:
+            cartridge_args.append("--bounce")
+        elif args.loop and args.loop_transition == "delta":
             cartridge_args += ["--seamless-loop", "--loop-pause-frames",
                                args.loop_pause_frames]
         elif not args.loop:
@@ -151,7 +170,10 @@ def main() -> None:
         "source": str(source), "format": args.format,
         "fps_num": rate.numerator, "fps_den": rate.denominator,
         "max_frames": args.max_frames, "start_seconds": args.start_seconds,
+        "bounce": args.bounce,
         "geometry": args.geometry, "encoder": args.encoder, "auto": args.auto,
+        "source_window": args.source_window,
+        "source_window_pixels": args.source_window_pixels,
         "max_hybrid_bytes": args.max_hybrid_bytes,
         "temporal_attr_penalty": args.temporal_attr_penalty,
         "temporal_pixel_penalty": args.temporal_pixel_penalty,

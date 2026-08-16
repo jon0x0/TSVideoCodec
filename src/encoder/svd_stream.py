@@ -303,6 +303,50 @@ def decode_paired_cells(previous: ECMFrame, payload: bytes) -> ECMFrame:
     return ECMFrame(bytes(bitmap), bytes(attrs))
 
 
+def encode_paired_xor_cells(previous: ECMFrame, current: ECMFrame) -> tuple[bytes, FrameStats]:
+    """Encode reversible raster-ordered cells, pairing bitmap and attribute XORs."""
+    records = bytearray()
+    count = 0
+    for logical in range(PLANE_SIZE):
+        y, x_byte = divmod(logical, 32)
+        offset = screen_offset(y, x_byte)
+        bitmap_xor = previous.bitmap[offset] ^ current.bitmap[offset]
+        attribute_xor = previous.attributes[offset] ^ current.attributes[offset]
+        flags = bool(bitmap_xor) | (bool(attribute_xor) << 1)
+        if not flags:
+            continue
+        records += struct.pack("<HB", offset, flags)
+        if flags & 1:
+            records.append(bitmap_xor)
+        if flags & 2:
+            records.append(attribute_xor)
+        count += 1
+    return struct.pack("<H", count) + records, FrameStats("PAIRED_XOR_CELLS", len(records) + 2)
+
+
+def decode_paired_xor_cells(previous: ECMFrame, payload: bytes) -> ECMFrame:
+    if len(payload) < 2:
+        raise ValueError("truncated paired-XOR cell count")
+    bitmap = bytearray(previous.bitmap)
+    attrs = bytearray(previous.attributes)
+    count = struct.unpack_from("<H", payload)[0]
+    position = 2
+    for _ in range(count):
+        if position + 3 > len(payload):
+            raise ValueError("truncated paired-XOR cell record")
+        offset, flags = struct.unpack_from("<HB", payload, position)
+        position += 3
+        if offset >= PLANE_SIZE or flags not in (1, 2, 3):
+            raise ValueError("invalid paired-XOR cell record")
+        if flags & 1:
+            bitmap[offset] ^= payload[position]; position += 1
+        if flags & 2:
+            attrs[offset] ^= payload[position]; position += 1
+    if position != len(payload):
+        raise ValueError("trailing paired-XOR cell payload bytes")
+    return ECMFrame(bytes(bitmap), bytes(attrs))
+
+
 def _run_length(kinds: list[int], start: int, maximum: int) -> int:
     kind = kinds[start]
     end = start + 1

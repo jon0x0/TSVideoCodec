@@ -30,6 +30,17 @@ flat fields. Luma and chroma are scored separately so a numerically convenient
 neutral pair does not erase pale source colour. Brightness, contrast,
 saturation, gamma, and chroma weighting are explicit reproducible parameters.
 
+### Source windows
+
+Cropping is performed by FFmpeg before scaling, automatic clip analysis, or
+ECM encoding. `--source-window X,Y,RIGHT` uses normalized source dimensions:
+X and Y locate the upper-left corner and RIGHT locates the right edge.
+`--source-window-pixels X,Y,WIDTH` uses source pixels instead. In both forms the
+height is derived for a 4:3 viewport. If the rectangle would cross the source
+edge, its width and height are reduced together while preserving the requested
+origin. `sequence/run.json` records the requested values, source dimensions,
+and resolved integer crop.
+
 ## Automatic analysis
 
 `--auto` analyzes all selected source frames before encoding. It constructs a
@@ -63,13 +74,32 @@ Presentation uses absolute hardware-tick deadlines so decode time does not
 accumulate into playback slowdown. This reduces but cannot eliminate tearing:
 the TS2068 is still scanning the same display memory being modified.
 
+### Reversible bounce playback
+
+`--bounce` is a cartridge-player feature rather than a second encoding pass.
+For N stored frames, the initial pointer table presents
+`0,1,...,N-1,N-2,...,1`; subsequent cycles use the first delta in reverse to
+return from frame 1 to frame 0. The player therefore exposes `2*N-2` timed
+positions while storing only the keyframe and N-1 forward deltas.
+
+Whole-plane hybrid records already carry XOR masks and are reversible. Normal
+paired-cell records carry replacement bitmap and attribute values and must not
+be replayed backward. Bounce combined with paired transport consequently uses
+the dedicated paired-XOR cartridge record (type 9). Each changed 8x1 cell holds
+an offset, plane flags, and bitmap and/or attribute XOR masks. Applying the
+record to either endpoint reconstructs the other endpoint while retaining the
+anti-tearing benefit of updating both visible planes together.
+
 ## Storage and players
 
 The 64 KB cartridge reserves one 8 KB bank for code and tables and uses seven
-banks for complete, non-crossing frame records. A full ECM keyframe is 12,288
-bytes; subsequent deltas are packed best-fit-decreasing into the remaining
-banks. The TAP player instead uses one safe contiguous RAM image and preserves
-the BASIC workspace so a keypress can restore normal display mode and return.
+banks for media. The default packer keeps complete frame records within banks
+and packs them best-fit-decreasing. Hybrid `--fifo-packing` instead treats all
+seven banks as one 57,344-byte logical stream and inserts explicit continuation
+markers at bank crossings. A full ECM keyframe is 12,288 bytes and may use
+PackBits. The TAP player instead uses one safe contiguous RAM image and
+preserves the BASIC workspace so a keypress can restore normal display mode
+and return.
 
 ## Portability and verification
 
@@ -77,5 +107,6 @@ The reference encoder is Python/NumPy/Pillow. The performance-critical Sierra
 Lite path has a C11 implementation with no third-party C dependencies. FFmpeg
 performs all probing and extraction. Pasmo assembles Z80 players, and Fuse
 automation measures real decoder duration and cadence. Unit tests cover address
-mapping, legal ECM reconstruction, automatic analysis, stream round trips, and
-transport decoders.
+mapping, legal ECM reconstruction, automatic analysis, source-window
+resolution, stream round trips, reversible paired-XOR deltas, bounce table
+traversal, and transport decoders.

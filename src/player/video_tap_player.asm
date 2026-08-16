@@ -51,7 +51,16 @@ NEXT_FRAME:     CALL    NEXT_INTERVAL
                 CP      7
                 JR      Z,COPY_PACK_KEY
                 CP      4
+                JR      Z,COPY_RASTER
+                CP      9
                 JP      NZ,EXIT_PLAYER
+                LD      E,(HL)
+                INC     HL
+                LD      D,(HL)
+                EX      DE,HL
+                CALL    DECODE_PAIRED_XOR
+                JR      FRAME_READY
+COPY_RASTER:
                 LD      E,(HL)
                 INC     HL
                 LD      D,(HL)
@@ -98,10 +107,10 @@ HOLD_DONE:                                  ; keep ROM clock live during RAM dec
                 LD      A,(FRAMES_LEFT)
                 DEC     A
                 LD      (FRAMES_LEFT),A
-                JR      NZ,NEXT_FRAME
+                JP      NZ,NEXT_FRAME
 
 PAUSE_LAST:     CALL    RESET_LOOP
-                JR      NEXT_FRAME
+                JP      NEXT_FRAME
 
 RESET_SEQUENCE: LD      HL,FRAME_TABLE_PTRS
                 LD      (TABLE_PTR),HL
@@ -274,6 +283,53 @@ RASTER_CHECK_ROW:
                 POP     HL
                 JR      RASTER_COMMAND
 
+; Reversible paired cells: count u16, then offset u16, flags, and selected
+; bitmap/attribute XOR masks. HL is the contiguous source pointer.
+DECODE_PAIRED_XOR:
+                LD      A,(HL)
+                INC     HL
+                LD      (PAIRS_LEFT),A
+                LD      A,(HL)
+                INC     HL
+                LD      (PAIRS_LEFT+1),A
+TAP_PAIR_XOR_LOOP:
+                LD      DE,(PAIRS_LEFT)
+                LD      A,D
+                OR      E
+                RET     Z
+                LD      E,(HL)
+                INC     HL
+                LD      D,(HL)
+                INC     HL
+                SET     6,D
+                LD      A,(HL)
+                INC     HL
+                LD      C,A
+                PUSH    HL
+                EX      DE,HL
+                POP     DE
+                BIT     0,C
+                JR      Z,TAP_PAIR_XOR_ATTRIBUTE
+                LD      A,(DE)
+                INC     DE
+                XOR     (HL)
+                LD      (HL),A
+TAP_PAIR_XOR_ATTRIBUTE:
+                BIT     1,C
+                JR      Z,TAP_PAIR_XOR_NEXT
+                SET     5,H
+                LD      A,(DE)
+                INC     DE
+                XOR     (HL)
+                LD      (HL),A
+TAP_PAIR_XOR_NEXT:
+                PUSH    DE
+                POP     HL
+                LD      DE,(PAIRS_LEFT)
+                DEC     DE
+                LD      (PAIRS_LEFT),DE
+                JR      TAP_PAIR_XOR_LOOP
+
 TABLE_PTR:      DW      0
 FRAMES_LEFT:    DB      0
 NEXT_TICK:      DB      0
@@ -282,6 +338,7 @@ NEXT_ROW_PTR:   DW      0
 ORIGINAL_SP:    DW      0
 PACK_COUNT:     DB      0
 PACK_VALUE:     DB      0
+PAIRS_LEFT:     DW      0
 
 BITMAP_ROWS:
                 INCLUDE "bitmap_rows.inc"

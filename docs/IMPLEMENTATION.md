@@ -76,7 +76,8 @@ the TS2068 is still scanning the same display memory being modified.
 
 ### Reversible bounce playback
 
-`--bounce` is a cartridge-player feature rather than a second encoding pass.
+`--bounce` is a player feature rather than a second encoding pass and is
+available for cartridge and TAP output.
 For N stored frames, the initial pointer table presents
 `0,1,...,N-1,N-2,...,1`; subsequent cycles use the first delta in reverse to
 return from frame 1 to frame 0. The player therefore exposes `2*N-2` timed
@@ -85,7 +86,8 @@ positions while storing only the keyframe and N-1 forward deltas.
 Whole-plane hybrid records already carry XOR masks and are reversible. Normal
 paired-cell records carry replacement bitmap and attribute values and must not
 be replayed backward. Bounce combined with paired transport consequently uses
-the dedicated paired-XOR cartridge record (type 9). Each changed 8x1 cell holds
+the dedicated paired-XOR player record (type 9). TAP bounce uses the same
+record because its normal raster-replacement deltas are also directional. Each changed 8x1 cell holds
 an offset, plane flags, and bitmap and/or attribute XOR masks. Applying the
 record to either endpoint reconstructs the other endpoint while retaining the
 anti-tearing benefit of updating both visible planes together.

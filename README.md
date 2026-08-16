@@ -77,7 +77,7 @@ For clips whose source has an intentional discontinuity, use
 boundary instead of storing a last-to-first delta. The default is `delta`.
 
 For motion that should reverse smoothly at its endpoint, add `--bounce` to a
-cartridge build. The player traverses the same reversible delta records forward
+cartridge or TAP build. The player traverses the same reversible delta records forward
 and backward without storing reversed frames or duplicate payload. Endpoint
 frames are not repeated: playback is `0..N-1..1`, then returns seamlessly to
 frame zero using the first delta in reverse. Hybrid deltas are already XOR

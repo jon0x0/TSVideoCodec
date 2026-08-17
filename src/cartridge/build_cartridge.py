@@ -15,7 +15,9 @@ from toolchain import assemble_pasmo
 from svd_ecm import ECMFrame
 from keyframe_codec import decode_packbits, encode_packbits
 from fifo_hybrid import pack_fifo_hybrid
+from progress import progress, progress_done
 from svd_stream import (encode_delta, encode_hybrid, encode_paired_cells,
+                        encode_sliced_paired_cells,
                         encode_paired_xor_cells, encode_row_hybrid)
 from svd_ecm import screen_offset
 CHUNK_SIZE = 0x2000
@@ -50,6 +52,10 @@ def main() -> None:
                         help="use compact top-to-bottom bitmap/attribute row deltas")
     parser.add_argument("--paired-cell-updates", action="store_true",
                         help="use raster-ordered replacement cells with paired bitmap/colour")
+    parser.add_argument("--update-slices", type=int, default=1,
+                        help="apply paired updates over 1-4 successive 60 Hz ticks")
+    parser.add_argument("--slice-order", choices=("interlaced", "bands"),
+                        default="interlaced")
     parser.add_argument("--reverse-paired-cell-updates", action="store_true",
                         help="use bottom-to-top replacement cells with paired bitmap/colour")
     parser.add_argument("--frame-limit", type=int, default=0,
@@ -69,6 +75,12 @@ def main() -> None:
     if args.fifo_packing and any((args.raster_updates, args.row_hybrid_updates,
                                   args.paired_cell_updates, args.reverse_paired_cell_updates)):
         raise SystemExit("--fifo-packing currently supports hybrid transport only")
+    if not 1 <= args.update_slices <= 4:
+        raise SystemExit("--update-slices must be between 1 and 4")
+    if args.update_slices > 1 and not args.paired_cell_updates:
+        raise SystemExit("--update-slices currently requires --paired-cell-updates")
+    if args.update_slices > 1 and args.bounce:
+        raise SystemExit("sliced updates do not yet support reversible bounce playback")
     if not 0 <= args.decode_tick_compensation <= 255:
         raise SystemExit("--decode-tick-compensation must fit in one byte")
     args.output.mkdir(parents=True, exist_ok=True)
@@ -148,10 +160,14 @@ def main() -> None:
                         "update_bytes": key_stored_size})
     blobs = []
     for index in range(1, len(frames)):
+        progress(f"Compressing cartridge update frame {index}/{len(frames) - 1}")
         previous = ECMFrame(frames[index - 1][:0x1800], frames[index - 1][0x1800:])
         current = ECMFrame(frames[index][:0x1800], frames[index][0x1800:])
         if args.bounce and (args.paired_cell_updates or args.reverse_paired_cell_updates):
             blob, _ = encode_paired_xor_cells(previous, current)
+        elif args.update_slices > 1:
+            blob, _ = encode_sliced_paired_cells(previous, current, args.update_slices,
+                                                  args.slice_order)
         elif args.paired_cell_updates or args.reverse_paired_cell_updates:
             blob, _ = encode_paired_cells(previous, current,
                                           reverse=args.reverse_paired_cell_updates)
@@ -164,11 +180,16 @@ def main() -> None:
         if len(blob) > CHUNK_SIZE:
             raise SystemExit(f"frame {index} compressed delta exceeds one bank")
         blobs.append((index, blob))
+    progress_done(f"Compressed {len(frames) - 1} cartridge frame updates")
     loop_blob = None
     if args.seamless_loop:
+        print("Compressing seamless last-to-first loop update", flush=True)
         previous = ECMFrame(frames[-1][:0x1800], frames[-1][0x1800:])
         first = ECMFrame(frames[0][:0x1800], frames[0][0x1800:])
-        loop_blob, _ = (encode_paired_cells(previous, first,
+        loop_blob, _ = (encode_sliced_paired_cells(previous, first, args.update_slices,
+                                                   args.slice_order)
+                        if args.update_slices > 1 else
+                        encode_paired_cells(previous, first,
                                             reverse=args.reverse_paired_cell_updates)
                         if (args.paired_cell_updates or args.reverse_paired_cell_updates) else
                         encode_delta(previous, first) if args.raster_updates else
@@ -179,17 +200,22 @@ def main() -> None:
     placements = {}
     if args.fifo_packing:
         cursor = key_stored_size
-        for index, blob in blobs:
+        for packed_number, (index, blob) in enumerate(blobs, 1):
+            label = "loop" if index == len(frames) else f"frame {index}"
+            progress(f"Packing {label} ({packed_number}/{len(blobs)}) into cartridge FIFO")
             stored_blob = pack_fifo_hybrid(blob, cursor)
             if cursor + len(stored_blob) > capacity:
                 raise SystemExit(f"frame {index} exceeds cartridge FIFO capacity")
             payload[cursor:cursor + len(stored_blob)] = stored_blob
             placements[index] = (cursor, stored_blob)
             cursor += len(stored_blob)
+        progress_done(f"Packed {len(blobs)} records into cartridge FIFO")
     else:
         # Best-fit decreasing retains the fast no-bank-crossing decoder path.
         pack_items.extend(blobs)
-        for index, blob in sorted(pack_items, key=lambda item: len(item[1]), reverse=True):
+        sorted_items = sorted(pack_items, key=lambda item: len(item[1]), reverse=True)
+        for packed_number, (index, blob) in enumerate(sorted_items, 1):
+            progress(f"Packing cartridge record {packed_number}/{len(sorted_items)}")
             candidates = [(end - start, slot_index) for slot_index, (start, end) in enumerate(slots)
                           if end - start >= len(blob)]
             if not candidates:
@@ -199,6 +225,7 @@ def main() -> None:
             payload[offset:offset + len(blob)] = blob
             slots[slot_index][0] += len(blob)
             placements[index] = (offset, blob)
+        progress_done(f"Packed {len(sorted_items)} cartridge records")
 
     if keyframe_codec == "packbits" and not args.fifo_packing:
         key_records = []
@@ -215,6 +242,7 @@ def main() -> None:
             frame_records.append(("fifo_hybrid" if args.fifo_packing else
                                   "paired_xor" if args.bounce and (args.paired_cell_updates or
                                                                     args.reverse_paired_cell_updates) else
+                                  "sliced_paired" if args.update_slices > 1 else
                                   "paired" if (args.paired_cell_updates or
                                                 args.reverse_paired_cell_updates) else
                                   "raster" if args.raster_updates else
@@ -222,6 +250,7 @@ def main() -> None:
             frame_stats.append({"frame": index,
                                 "frame_type": ("PAIRED_XOR_CELLS" if args.bounce and
                                                                     (args.paired_cell_updates or args.reverse_paired_cell_updates) else
+                                               "SLICED_PAIRED_CELLS" if args.update_slices > 1 else
                                                "PAIRED_CELLS_REVERSE" if args.reverse_paired_cell_updates else
                                                "PAIRED_CELLS" if args.paired_cell_updates else
                                                "RASTER" if args.raster_updates else
@@ -260,7 +289,7 @@ def main() -> None:
             lines.append(f"                DB      8,{offset // CHUNK_SIZE}\n                DW      ${source:04X}")
         else:
             mask, source = records
-            record_type = 9 if kind == "paired_xor" else 6 if kind == "paired" else 4 if kind == "raster" else 5 if kind == "row_hybrid" else 3
+            record_type = 10 if kind == "sliced_paired" else 9 if kind == "paired_xor" else 6 if kind == "paired" else 4 if kind == "raster" else 5 if kind == "row_hybrid" else 3
             lines.append(f"                DB      {record_type},${mask:02X}\n                DW      ${source:04X}")
     if args.bounce:
         loop_indices = bounce_table_indices(len(frames), False)
@@ -272,7 +301,7 @@ def main() -> None:
                      ",".join(f"FRAME_{i}_TABLE" for i in range(1, len(frames))))
         mask, source = loop_record
         lines.append("LOOP_FRAME_TABLE:")
-        loop_type = 8 if args.fifo_packing else 6 if (args.paired_cell_updates or args.reverse_paired_cell_updates) else 4 if args.raster_updates else 5 if args.row_hybrid_updates else 3
+        loop_type = 8 if args.fifo_packing else 10 if args.update_slices > 1 else 6 if (args.paired_cell_updates or args.reverse_paired_cell_updates) else 4 if args.raster_updates else 5 if args.row_hybrid_updates else 3
         lines.append(f"                DB      {loop_type},${mask:02X}\n                DW      ${source:04X}")
     else:
         lines.append("LOOP_TABLE_PTRS EQU FRAME_TABLE_PTRS")
@@ -351,6 +380,8 @@ def main() -> None:
         "row_hybrid_updates": args.row_hybrid_updates,
         "paired_cell_updates": args.paired_cell_updates,
         "reverse_paired_cell_updates": args.reverse_paired_cell_updates,
+        "update_slices": args.update_slices,
+        "slice_order": args.slice_order,
         "fifo_packing": args.fifo_packing,
         "loop_delta_bytes": (len(placements[len(frames)][1]) if args.fifo_packing and loop_blob is not None
                              else len(loop_blob) if loop_blob is not None else 0),

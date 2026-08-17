@@ -41,6 +41,13 @@ Use `--native-encoder PATH` for a non-default executable location. The
 existing `--encoder python` backend remains available as an independent
 reference implementation.
 
+The one-command front end also passes `--encoder native` to the whole-clip
+cartridge fitter. Its saved-frame rate-control pass invokes the C
+`rate-hybrid` command for the ranked-cell sort, binary budget search, and
+hybrid-size trials; Python performs only orchestration and exact stream
+verification. This avoids roughly thirteen Python hybrid trial encodes per
+delta.
+
 Benchmark both backends reproducibly:
 
 ```sh

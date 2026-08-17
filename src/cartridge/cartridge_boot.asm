@@ -20,6 +20,8 @@ PAIRS_LEFT      EQU     $780A
 PACK_COUNT      EQU     $780C
 PACK_VALUE      EQU     $780D
 FIFO_SLOT       EQU     $780E
+SLICES_LEFT     EQU     $780F
+SLICE_MASK      EQU     $7810
 
 START:          DI
                 POP     HL                  ; move AROS return off screen RAM
@@ -154,6 +156,8 @@ COPY_FRAME:     LD      A,(IX+0)            ; 1=key table, 2=XOR, 3=hybrid
                 JP      Z,COPY_FIFO_HYBRID
                 CP      9
                 JP      Z,COPY_PAIRED_XOR
+                CP      10
+                JP      Z,COPY_SLICED_PAIRED
                 CP      2
                 JP      Z,COPY_XOR
 COPY_KEY:       LD      A,(IX+0)
@@ -411,6 +415,39 @@ COPY_PAIRED:    LD      A,(IX+0)
                 LD      D,(IX+2)
                 CALL    DECODE_PAIRED
                 JP      COPY_DONE
+
+; Raster bands stored as: slice count, then one normal counted paired stream
+; per band. Complete one band per 60 Hz tick so large updates do not race the
+; raster for an entire logical frame interval.
+COPY_SLICED_PAIRED:
+                LD      A,(IX+0)
+                LD      (SLICE_MASK),A
+                LD      BC,$00F4
+                OUT     (C),A
+                LD      E,(IX+1)
+                LD      D,(IX+2)
+                LD      A,(DE)
+                INC     DE
+                LD      (SLICES_LEFT),A
+SLICED_PAIRED_LOOP:
+                CALL    DECODE_PAIRED
+                LD      A,(SLICES_LEFT)
+                DEC     A
+                LD      (SLICES_LEFT),A
+                JP      Z,COPY_DONE
+SLICE_WAIT:
+                PUSH    DE                  ; ROM interrupt need not preserve source cursor
+                LD      A,$10               ; expose HOME ROM for IM 1 handler
+                LD      BC,$00F4
+                OUT     (C),A
+                EI
+                HALT
+                DI
+                POP     DE
+                LD      A,(SLICE_MASK)       ; restore packed source bank
+                LD      BC,$00F4
+                OUT     (C),A
+                JR      SLICED_PAIRED_LOOP
 
 COPY_PAIRED_XOR:
                 LD      A,(IX+0)

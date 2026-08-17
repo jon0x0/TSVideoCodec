@@ -24,6 +24,18 @@ foreground detail, and restores exposed backgrounds without manual masks.
 Generated frames, streams, reports, source videos, native executables, and
 assembler objects are deliberately excluded from Git.
 
+## Algorithm lineage
+
+The still-image side was informed by
+[Retro Pixel Converter](https://github.com/factus10/retro-pixel-converter),
+particularly its TS2068 ECM treatment, linear-light colour-pair fitting, and
+Sierra Lite workflow. TSVideoCodec independently implements those ideas for a
+scriptable video pipeline and adds temporal reconstructed-state optimization,
+byte-budget selection, hybrid XOR delta compression, banked FIFO transport,
+anti-tearing Z80 playback, seamless loops, and reversible bounce playback.
+See [the implementation notes](docs/IMPLEMENTATION.md#what-is-searched) for the
+search algorithms and the boundary between image conversion and video coding.
+
 ## Requirements
 
 - Python 3.10 or newer
@@ -64,6 +76,32 @@ For a whole-clip rather than per-frame rate limit, set
 across all non-key frames according to source motion while retaining a minimum
 allocation for every frame. `--clip-max-frame-bytes` optionally limits the
 largest individual update.
+
+To maximize quality within the selected output capacity, use `--fill-space`:
+
+```sh
+python tsvideocodec.py input.gif build/example --format cartridge \
+  --fill-space --transport hybrid --fifo-packing --encoder native
+```
+
+The same option works for TAP, cartridge, and `--format both`. It first creates
+unrestricted candidates, measures the actual keyframe, loop delta and selected
+transport, then searches for the highest common reconstruction budget that
+fits. `--max-frames` remains independent; use `--max-frames 0` explicitly to
+select every source frame. The fitting pass does not repeat source conversion.
+
+Without `--fill-space`, the default is `--quality 100`: no hidden per-frame
+rate ceiling is applied. `--quality 1..100` is the normal explicit quality
+control; lower values retain fewer, lower-value cell changes. The expert
+`--max-hybrid-bytes` option remains available but has no nonzero default.
+Before assembly, the front end measures the actual selected transport. If it
+does not fit, it reports two estimated alternatives: the largest frame count
+at the requested quality and a quality value likely to retain all selected
+frames. `--fill-space` performs the exact iterative search.
+
+If fitting or packaging fails after ECM conversion has completed, add
+`--reuse-sequence` to the same command. The front end resumes from
+`OUTPUT/sequence` without extracting or converting the source frames again.
 
 Hybrid cartridge builds can additionally use `--transport hybrid
 --fifo-packing`. This treats all seven media banks as one logical 57,344-byte
@@ -113,8 +151,47 @@ Common options include:
 ```sh
 python tsvideocodec.py input.mp4 build/example --format both \
   --start-seconds 3 --fps 12 --max-frames 12 --geometry crop \
-  --max-hybrid-bytes 1400 --transport paired --encoder native
+  --quality 85 --transport paired --encoder native
 ```
+
+`--max-frames N` stops extraction after N samples, so unselected frames are
+not ECM-encoded. To cover the entire source duration with only N encoded
+frames, add `--frame-selection even`:
+
+```sh
+python tsvideocodec.py input.mp4 build/decimated --max-frames 24 \
+  --frame-selection even --fps 12 --encoder native
+```
+
+Native automatic encoding forces a bitmap or colour cell still awaiting its
+target after four frames by default. Tune this with `--max-cell-age N`; zero
+disables it. Persistent-region detection is separate:
+`--no-auto-static-plate` disables the static plate and its foreground masks,
+while `--auto-plate-encoder`, `--background-motion-threshold`, and
+`--background-penalty-multiplier` tune its representation and sensitivity.
+
+Attribute-video profiles use the same working TAP and cartridge players:
+
+```sh
+python tsvideocodec.py input.gif build/attr --video-mode attr-32x24 --encoder native
+python tsvideocodec.py input.gif build/attr192 --video-mode attr-32x192 --encoder native
+```
+
+Both use a fixed checker bitmap and encode colour only. `attr-32x24` assigns
+one attribute to each 8x8 block; `attr-32x192` assigns one to every 8x1 cell.
+
+For large paired-cell updates that visibly tear, cartridge output can stage
+each logical frame over two 60 Hz raster bands:
+
+```sh
+python tsvideocodec.py input.gif build/sliced --format cartridge \
+  --transport paired --update-slices 2 --fps 30 --encoder native
+```
+
+The default interlaced order applies alternate scanlines, waits for the next
+display tick, and then applies the remaining lines. `--slice-order bands`
+selects the original upper/lower diagnostic layout. This opt-in mode is limited to 30 fps or below;
+`--update-slices 1` keeps the normal decoder. Bounce is not yet supported.
 
 To animate a 4:3 window within a larger movie, give its upper-left position
 and right edge as fractions of the source dimensions:
@@ -153,7 +230,7 @@ motion:
 ```sh
 python src/encoder/encode_sequence.py input.gif build/example/sequence \
   --fps 12 --max-frames 12 --geometry fit \
-  --dither-mode sierra-lite --auto --max-hybrid-bytes 1400
+  --dither-mode sierra-lite --auto --quality 85
 ```
 
 To use the optional native C encoder, build it first and add `--encoder native`
@@ -191,7 +268,7 @@ For an MP4 beginning three seconds into the source, the encoding step could be:
 ```sh
 python src/encoder/encode_sequence.py input.mp4 build/example/sequence \
   --start-seconds 3 --fps 12 --max-frames 12 --geometry crop \
-  --dither-mode sierra-lite --auto --max-hybrid-bytes 1400
+  --dither-mode sierra-lite --auto --quality 85
 ```
 
 ## Complete GIF/video to TAP example

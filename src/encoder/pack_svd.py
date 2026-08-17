@@ -27,6 +27,7 @@ def main() -> None:
         if not atr.exists():
             raise SystemExit(f"missing paired plane: {atr}")
         frames.append(ECMFrame(pix.read_bytes(), atr.read_bytes()))
+    print(f"Packing {len(frames)} frames into an SVD {args.delta_format} stream...", flush=True)
     stream, stats = encode_stream(frames, args.fps_num, args.fps_den, args.delta_format)
     decoded, fps = decode_stream(stream)
     if decoded != frames or fps != (args.fps_num, args.fps_den):

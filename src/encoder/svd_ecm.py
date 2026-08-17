@@ -96,6 +96,38 @@ class ECMFrame:
         prefix.with_suffix(".atr").write_bytes(self.attributes)
 
 
+def encode_attribute_video(source_rgb: np.ndarray, logical_rows: int) -> ECMFrame:
+    """Encode fixed-checker attribute video with 32x24 or 32x192 cells."""
+    if logical_rows not in (24, 192):
+        raise ValueError("attribute video rows must be 24 or 192")
+    rgb = np.asarray(source_rgb, dtype=np.float32)
+    if rgb.shape != (HEIGHT, WIDTH, 3):
+        raise ValueError("attribute video source must be 256x192 RGB")
+    targets = (rgb.reshape(24, 8, 32, 8, 3).mean(axis=(1, 3))
+               if logical_rows == 24 else
+               rgb.reshape(192, 32, 8, 3).mean(axis=2))
+    candidate_attrs = []
+    mixtures = []
+    palette = PALETTE.astype(np.float32)
+    for bright_index in range(2):
+        base = 8 if bright_index else 0
+        for paper in range(8):
+            for ink in range(8):
+                candidate_attrs.append((0x40 if bright_index else 0) | (paper << 3) | ink)
+                mixtures.append((palette[base | paper] + palette[base | ink]) * 0.5)
+    mixture_array = np.asarray(mixtures, dtype=np.float32)
+    errors = np.sum((targets[:, :, None, :] - mixture_array[None, None, :, :]) ** 2,
+                    axis=3)
+    selected = np.asarray(candidate_attrs, dtype=np.uint8)[np.argmin(errors, axis=2)]
+    if logical_rows == 24:
+        selected = np.repeat(selected, 8, axis=0)
+    bitmap = np.empty((HEIGHT, 32), dtype=np.uint8)
+    bitmap[0::2] = 0xAA
+    bitmap[1::2] = 0x55
+    return ECMFrame(bytes(_logical_to_bitmap_plane(bitmap)),
+                    bytes(_logical_to_attribute_plane(selected)))
+
+
 def _perceptual(rgb: np.ndarray, chroma_weight: float) -> np.ndarray:
     """Map RGB to a simple Y/Cb/Cr-like space with structure-biased weights."""
     matrix = np.array(

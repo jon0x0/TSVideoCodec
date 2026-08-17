@@ -8,9 +8,11 @@ from svd_ecm import ECMFrame, PLANE_SIZE, screen_offset
 from keyframe_codec import decode_packbits, encode_packbits
 from fifo_hybrid import NEXT_BANK, NEXT_BANK_PADDED, pack_fifo_hybrid, remove_fifo_markers
 from svd_stream import (decode_delta, decode_hybrid, decode_paired_cells,
+                        decode_sliced_paired_cells,
                         decode_paired_xor_cells, decode_sparse,
                         decode_stream, decode_xor, encode_delta, encode_hybrid,
                         encode_paired_cells, encode_paired_xor_cells,
+                        encode_sliced_paired_cells,
                         encode_sparse, encode_stream, encode_xor)
 
 
@@ -26,6 +28,17 @@ def test_paired_xor_round_trip_is_reversible():
     assert stats.frame_type == "PAIRED_XOR_CELLS"
     assert decode_paired_xor_cells(first, payload) == second
     assert decode_paired_xor_cells(second, payload) == first
+
+
+def test_two_slice_paired_round_trip():
+    first = random_frame(102)
+    second = random_frame(103)
+    payload, stats = encode_sliced_paired_cells(first, second, 2)
+    assert payload[0] == 2
+    assert stats.frame_type == "SLICED_PAIRED_CELLS"
+    assert decode_sliced_paired_cells(first, payload) == second
+    banded, _ = encode_sliced_paired_cells(first, second, 2, "bands")
+    assert decode_sliced_paired_cells(first, banded) == second
 
 
 def test_delta_round_trip_all_command_types():

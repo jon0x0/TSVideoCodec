@@ -276,6 +276,68 @@ def encode_paired_cells(previous: ECMFrame, current: ECMFrame, *, reverse: bool 
     return struct.pack("<H", count) + records, FrameStats("PAIRED_CELLS", len(records) + 2)
 
 
+def encode_sliced_paired_cells(previous: ECMFrame, current: ECMFrame,
+                               slices: int, order: str = "interlaced") -> tuple[bytes, FrameStats]:
+    """Encode raster slices that the player applies on successive 60 Hz ticks."""
+    if not 2 <= slices <= 4:
+        raise ValueError("sliced paired updates require 2 to 4 slices")
+    if order not in ("interlaced", "bands"):
+        raise ValueError("sliced paired order must be interlaced or bands")
+    payload = bytearray([slices])
+    total_records = 0
+    for slice_index in range(slices):
+        raster_rows = PLANE_SIZE // 32
+        records = bytearray()
+        count = 0
+        if order == "interlaced":
+            rows = range(slice_index, raster_rows, slices)
+        else:
+            y_start = (raster_rows * slice_index) // slices
+            y_end = (raster_rows * (slice_index + 1)) // slices
+            rows = range(y_start, y_end)
+        for y in rows:
+            for x_byte in range(32):
+                offset = screen_offset(y, x_byte)
+                flags = ((previous.bitmap[offset] != current.bitmap[offset]) |
+                         ((previous.attributes[offset] != current.attributes[offset]) << 1))
+                if not flags:
+                    continue
+                records += struct.pack("<HB", offset, flags)
+                if flags & 1:
+                    records.append(current.bitmap[offset])
+                if flags & 2:
+                    records.append(current.attributes[offset])
+                count += 1
+        payload += struct.pack("<H", count) + records
+        total_records += count
+    return bytes(payload), FrameStats("SLICED_PAIRED_CELLS", len(payload))
+
+
+def decode_sliced_paired_cells(previous: ECMFrame, payload: bytes) -> ECMFrame:
+    """Reference decoder for the concatenated counted raster slices."""
+    if not payload or not 2 <= payload[0] <= 4:
+        raise ValueError("invalid sliced paired-cell header")
+    current = previous
+    position = 1
+    for _ in range(payload[0]):
+        if position + 2 > len(payload):
+            raise ValueError("truncated sliced paired-cell count")
+        count = struct.unpack_from("<H", payload, position)[0]
+        end = position + 2
+        for _ in range(count):
+            if end + 3 > len(payload):
+                raise ValueError("truncated sliced paired-cell record")
+            flags = payload[end + 2]
+            if flags not in (1, 2, 3):
+                raise ValueError("invalid sliced paired-cell flags")
+            end += 3 + bool(flags & 1) + bool(flags & 2)
+        current = decode_paired_cells(current, payload[position:end])
+        position = end
+    if position != len(payload):
+        raise ValueError("trailing sliced paired-cell payload bytes")
+    return current
+
+
 def decode_paired_cells(previous: ECMFrame, payload: bytes) -> ECMFrame:
     if len(payload) < 2:
         raise ValueError("truncated paired-cell count")

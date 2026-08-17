@@ -13,13 +13,26 @@ def load_cli():
     return module
 
 
+def recording_run(calls):
+    def run(script, *args):
+        calls.append((script, args))
+        if script == "src/encoder/encode_sequence.py":
+            sequence = Path(args[1])
+            sequence.mkdir(parents=True, exist_ok=True)
+            for index in range(2):
+                prefix = sequence / f"frame_{index:05d}"
+                prefix.with_suffix(".pix").write_bytes(bytes(0x1800))
+                prefix.with_suffix(".atr").write_bytes(bytes(0x1800))
+    return run
+
+
 def test_one_command_builds_both_outputs(monkeypatch, tmp_path):
     cli = load_cli()
     source = tmp_path / "input.gif"
     source.write_bytes(b"GIF89a")
     output = tmp_path / "output"
     calls = []
-    monkeypatch.setattr(cli, "run", lambda script, *args: calls.append((script, args)))
+    monkeypatch.setattr(cli, "run", recording_run(calls))
     monkeypatch.setattr(sys, "argv", [
         "tsvideocodec.py", str(source), str(output), "--format", "both",
         "--fps", "12.5", "--max-frames", "8", "--geometry", "crop",
@@ -37,6 +50,8 @@ def test_one_command_builds_both_outputs(monkeypatch, tmp_path):
         "src/player/build_video_tap.py",
     ]
     encoder_args = calls[0][1]
+    assert encoder_args[encoder_args.index("--max-hybrid-bytes") + 1] == 0
+    assert encoder_args[encoder_args.index("--quality") + 1] == 100.0
     window_index = encoder_args.index("--source-window")
     assert encoder_args[window_index + 1] == "0.3,0.3,0.6"
     cartridge_args = calls[2][1]
@@ -59,7 +74,7 @@ def test_bounce_is_a_player_option_for_cartridge_and_tap(monkeypatch, tmp_path):
     source = tmp_path / "input.gif"
     source.write_bytes(b"GIF89a")
     calls = []
-    monkeypatch.setattr(cli, "run", lambda script, *args: calls.append((script, args)))
+    monkeypatch.setattr(cli, "run", recording_run(calls))
     monkeypatch.setattr(sys, "argv", [
         "tsvideocodec.py", str(source), str(tmp_path / "output"),
         "--format", "both", "--bounce",
@@ -69,4 +84,111 @@ def test_bounce_is_a_player_option_for_cartridge_and_tap(monkeypatch, tmp_path):
 
     assert "--bounce" not in calls[0][1]
     assert "--bounce" in calls[2][1]
+    pause_index = calls[2][1].index("--loop-pause-frames")
+    assert calls[2][1][pause_index + 1] == 0
     assert "--bounce" in calls[3][1]
+
+
+def test_two_slice_updates_are_forwarded_to_paired_cartridge(monkeypatch, tmp_path):
+    cli = load_cli()
+    source = tmp_path / "input.gif"
+    source.write_bytes(b"GIF89a")
+    calls = []
+    monkeypatch.setattr(cli, "run", recording_run(calls))
+    monkeypatch.setattr(sys, "argv", [
+        "tsvideocodec.py", str(source), str(tmp_path / "output"),
+        "--format", "cartridge", "--transport", "paired",
+        "--update-slices", "2", "--fps", "30",
+    ])
+
+    cli.main()
+
+    cartridge_args = calls[2][1]
+    assert "--paired-cell-updates" in cartridge_args
+    slice_index = cartridge_args.index("--update-slices")
+    assert cartridge_args[slice_index + 1] == 2
+
+
+def test_fill_space_runs_saved_sequence_fitter(monkeypatch, tmp_path):
+    cli = load_cli()
+    source = tmp_path / "input.gif"
+    source.write_bytes(b"GIF89a")
+    output = tmp_path / "output"
+    calls = []
+    fit_calls = 0
+
+    def fake_run(script, *args):
+        nonlocal fit_calls
+        calls.append((script, args))
+        if script == "src/encoder/encode_sequence.py":
+            sequence = Path(args[1])
+            sequence.mkdir(parents=True, exist_ok=True)
+            for index in range(7):
+                prefix = sequence / f"frame_{index:05d}"
+                value = 0xFF if index % 2 else 0
+                prefix.with_suffix(".pix").write_bytes(bytes([value]) * 0x1800)
+                prefix.with_suffix(".atr").write_bytes(bytes([value]) * 0x1800)
+        elif script == "src/encoder/fit_sequence.py":
+            fit_calls += 1
+            if fit_calls == 1:
+                return
+            sequence = Path(args[0])
+            for prefix in sorted(sequence.glob("frame_*.pix"))[1:]:
+                prefix.write_bytes(bytes(0x1800))
+                prefix.with_suffix(".atr").write_bytes(bytes(0x1800))
+
+    monkeypatch.setattr(cli, "run", fake_run)
+    monkeypatch.setattr(cli, "probe_source_fps", lambda source: 12.5)
+    monkeypatch.setattr(sys, "argv", [
+        "tsvideocodec.py", str(source), str(output),
+        "--fill-space", "--transport", "hybrid", "--fifo-packing",
+        "--encoder", "native",
+    ])
+
+    cli.main()
+
+    scripts = [call[0] for call in calls]
+    assert scripts[0] == "src/encoder/encode_sequence.py"
+    assert "src/encoder/fit_sequence.py" in scripts
+    assert scripts[-2:] == ["src/encoder/pack_svd.py",
+                            "src/cartridge/build_cartridge.py"]
+    encoder_args = calls[0][1]
+    assert encoder_args[encoder_args.index("--max-frames") + 1] == 12
+    fitter_args = calls[1][1]
+    assert "--clip-delta-bytes" in fitter_args
+    assert fitter_args[fitter_args.index("--encoder") + 1] == "native"
+    manifest = json.loads((output / "build.json").read_text(encoding="utf-8"))
+    assert manifest["fill_space"] is True
+    assert manifest["max_frames"] == 12
+    assert (manifest["fps_num"], manifest["fps_den"]) == (25, 2)
+    assert manifest["calculated_clip_delta_bytes"] > 0
+
+
+def test_fill_space_accepts_bounce(monkeypatch, tmp_path):
+    cli = load_cli()
+    source = tmp_path / "input.gif"
+    source.write_bytes(b"GIF89a")
+    output = tmp_path / "output"
+    calls = []
+
+    def fake_run(script, *args):
+        calls.append((script, args))
+        if script == "src/encoder/encode_sequence.py":
+            sequence = Path(args[1]); sequence.mkdir(parents=True, exist_ok=True)
+            for index in range(3):
+                prefix = sequence / f"frame_{index:05d}"
+                prefix.with_suffix(".pix").write_bytes(bytes([index]) * 0x1800)
+                prefix.with_suffix(".atr").write_bytes(bytes(0x1800))
+
+    monkeypatch.setattr(cli, "run", fake_run)
+    monkeypatch.setattr(cli, "probe_source_fps", lambda source: 12.0)
+    monkeypatch.setattr(sys, "argv", [
+        "tsvideocodec.py", str(source), str(output), "--fill-space", "--bounce",
+        "--transport", "hybrid", "--fifo-packing",
+    ])
+    cli.main()
+    cartridge_args = next(args for script, args in calls
+                          if script == "src/cartridge/build_cartridge.py")
+    assert "--bounce" in cartridge_args
+    pause_index = cartridge_args.index("--loop-pause-frames")
+    assert cartridge_args[pause_index + 1] == 0

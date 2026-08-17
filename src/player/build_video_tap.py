@@ -15,6 +15,7 @@ from toolchain import assemble_pasmo
 from svd_ecm import ECMFrame, screen_offset
 from keyframe_codec import decode_packbits, encode_packbits
 from svd_stream import encode_delta, encode_paired_xor_cells
+from progress import progress, progress_done
 
 LOAD_ADDRESS = 0x7800
 STACK_TOP = 0xFF00
@@ -82,10 +83,12 @@ def main() -> None:
     key_path.write_bytes(packed_key if keyframe_codec == "packbits" else raw_key)
     blobs = []
     for index in range(1, len(frames)):
+        progress(f"Compressing TAP update frame {index}/{len(frames) - 1}")
         blob, _ = (encode_paired_xor_cells(frames[index - 1], frames[index])
                    if args.bounce else encode_delta(frames[index - 1], frames[index]))
         path = args.output / f"frame_{index:03d}.{'pairxor' if args.bounce else 'raster'}"
         path.write_bytes(blob); blobs.append(path)
+    progress_done(f"Compressed {len(frames) - 1} TAP frame updates")
     loop_blob = b""
     if not args.bounce:
         loop_blob, _ = encode_delta(frames[-1], frames[0])

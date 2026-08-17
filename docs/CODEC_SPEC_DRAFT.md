@@ -12,23 +12,35 @@ State is the currently displayed 6144-byte bitmap plane plus 6144-byte ECM attri
 Same reconstruction model, but desktop encoder selects updates under a per-frame decoder budget. Prefer measured Z80 cycle budget over raw byte budget.
 
 The executable encoder exposes this separately as `--max-hybrid-bytes`; zero
-disables it. The current 1800-byte experiment ranks complete 8x1 cell updates
+disables it. Per-frame budget mode ranks complete 8x1 cell updates
 by reduction in source-image error and applies the highest-value prefix that
 fits. All later decisions compare against that reconstructed state.
 
 An additional optional profile budgets bitmap and ECM attributes independently.
-The current measured split is 1450/350 compressed bytes with four-frame age
-priority for deferred attributes. On the current full clip it slightly improves
-both reconstructed RGB error and packed size compared with the shared 1800-byte
-budget, while retaining the same Z80 stream and decoder.
+A measured split of 1450/350 compressed bytes with four-frame age priority for
+deferred attributes improved both reconstructed RGB error and packed size on
+the original test clip compared with a shared 1800-byte budget, while retaining
+the same Z80 stream and decoder. These are historical measurements, not current
+universal defaults.
 
 The global allocator treats all delta payload as one clip budget, carries quiet
 frame savings forward, weights allocation by source motion, and enforces a hard
-per-frame ceiling. The current measured 42,000-byte / 3,600-byte-cap profile
-fits all 25 frames and remains below the 12 fps decoder deadline.
+per-frame ceiling. A historical 42,000-byte / 3,600-byte-cap profile fit all 25
+frames of its test clip and remained below that build's 12 fps decoder deadline.
+Front-end `--fill-space` now derives the clip budget from the selected
+keyframe, seamless-loop delta, FIFO overhead, and 57,344-byte media capacity.
 
 ### SVD-ATTR
 32x24 attribute video. Primary state is 768 attribute bytes. Bitmap may be fixed/preloaded or optionally use a later dither/detail extension.
+
+The current executable compatibility profile uses a fixed alternating `AA/55`
+bitmap and expands each of the 768 attributes over eight ECM scanlines, then
+uses the existing ECM delta transports and TAP/cartridge players. This proves
+end-to-end playback but does not yet realize compact 768-byte state on the wire.
+
+An implemented 32x192 attribute profile uses the same fixed bitmap but selects
+6144 independent 8x1 attributes. It preserves vertical colour resolution and
+also produces attribute-only deltas after the initial keyframe.
 
 ## Proposed frame types
 - KEY: establish complete state.
@@ -114,6 +126,23 @@ Conceptually minimize:
     J = perceptual_error(source, reconstruction(r)) + lambda * decode_cost(a)
 
 For fixed-budget mode, maximize visual-error reduction subject to total measured/estimated decode cost <= frame budget.
+
+### Implemented search decomposition
+
+The current implementation does not jointly brute-force `r` and `a` over a
+whole frame. It uses three bounded stages:
+
+- exhaustive evaluation of 128 legal bright/paper/ink attributes within each
+  8x1 cell, followed by Sierra Lite bitmap decisions;
+- visual-benefit ranking of the 6144 candidate cell updates and binary search
+  over the ranked prefix when a byte ceiling applies; and
+- an exact backward dynamic program choosing hybrid skip, literal-XOR, or
+  sparse-mask commands for each fixed bitmap and attribute delta plane.
+
+Thus the hybrid byte stream is minimum-sized for the selected reconstruction
+under the implemented opcodes, while selection of the reconstruction under a
+budget remains a practical heuristic rather than a globally optimal subset
+search. Unrestricted frames bypass the second stage.
 
 ## Perceptual encoding
 Test explicit luminance/chroma weighting. Preserve high-frequency structure preferentially in the 1-bit bitmap while accepting reduced horizontal chroma resolution. Do not assume raw RGB squared error is optimal.

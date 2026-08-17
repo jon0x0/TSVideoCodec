@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 """Extract a video sequence, encode ECM frames, and report temporal changes."""
 
 from __future__ import annotations
@@ -17,12 +17,14 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 
-from svd_ecm import ECMFrame, HEIGHT, encode_image, encode_image_sierra_lite, screen_offset
+from svd_ecm import (ECMFrame, HEIGHT, encode_attribute_video, encode_image,
+                     encode_image_sierra_lite, screen_offset)
 from svd_stream import encode_hybrid, encode_hybrid_plane
 from auto_profile import (adjust as adjust_auto, analyze as analyze_auto,
                           apply_foreground_overlays, apply_plate,
                           apply_solid_dark_closure, solidify_upper_background,
                           unadjust as unadjust_auto)
+from progress import progress, progress_done
 
 
 def native_sierra_encoder(
@@ -254,6 +256,19 @@ def probe_video_size(video: Path) -> tuple[int, int]:
     return int(streams[0]["width"]), int(streams[0]["height"])
 
 
+def probe_video_duration(video: Path) -> float:
+    ffprobe = shutil.which("ffprobe")
+    if not ffprobe:
+        raise SystemExit("ffprobe was not found on PATH")
+    result = subprocess.run(
+        [ffprobe, "-v", "error", "-show_entries", "format=duration",
+         "-of", "json", str(video)], check=True, capture_output=True, text=True)
+    duration = float(json.loads(result.stdout)["format"]["duration"])
+    if duration <= 0:
+        raise SystemExit("ffprobe reported a non-positive duration")
+    return duration
+
+
 def resolve_source_window(
     source_size: tuple[int, int], requested: tuple[float, float, float], normalized: bool,
 ) -> dict[str, int | float | str]:
@@ -296,11 +311,20 @@ def resolve_source_window(
 def extract_frames(
     video: Path, directory: Path, fps: float, max_frames: int, start_seconds: float = 0.0,
     geometry: str = "fit", source_window: dict[str, int | float | str] | None = None,
+    frame_selection: str = "first",
 ) -> list[Path]:
     ffmpeg = shutil.which("ffmpeg")
     if not ffmpeg:
         raise SystemExit("ffmpeg was not found on PATH")
-    filters = [f"fps={fps}"]
+    sampling_fps = fps
+    if frame_selection == "even":
+        if max_frames <= 0:
+            raise SystemExit("even frame selection requires --max-frames")
+        remaining_duration = probe_video_duration(video) - start_seconds
+        if remaining_duration <= 0:
+            raise SystemExit("start time is at or beyond the end of the source")
+        sampling_fps = max_frames / remaining_duration
+    filters = [f"fps={sampling_fps:.12g}"]
     if source_window:
         filters.append(
             f"crop={source_window['width']}:{source_window['height']}:"
@@ -339,6 +363,9 @@ def main() -> None:
                         choices=("sierra-line", "shell-aware", "ordered-bayer", "solid-dark"),
                         default="sierra-line",
                         help="dither strategy for dark foreground materials")
+    parser.add_argument("--auto-static-plate", action=argparse.BooleanOptionalAction,
+                        default=True,
+                        help="apply auto-detected persistent-region plate and overlays")
     parser.add_argument("--auto-solid-upper-background",
                         choices=("off", "blue", "light-blue"),
                         default="off",
@@ -346,8 +373,12 @@ def main() -> None:
     parser.add_argument("--auto-solid-upper-max-y", type=int, default=112,
                         help="exclusive scanline limit for solid upper background")
     parser.add_argument("--fps", type=float, default=12.0)
+    parser.add_argument("--video-mode", choices=("ecm", "attr-32x24", "attr-32x192"),
+                        default="ecm")
     parser.add_argument("--start-seconds", type=float, default=0.0)
     parser.add_argument("--max-frames", type=int, default=0, help="zero means all frames")
+    parser.add_argument("--frame-selection", choices=("first", "even"), default="first",
+                        help="take the first N output samples or distribute N across the clip")
     parser.add_argument(
         "--change-penalty",
         type=float,
@@ -396,6 +427,8 @@ def main() -> None:
                         help="fixed ordered ink fraction from 0 to 1; -1 selects automatically")
     parser.add_argument("--max-hybrid-bytes", type=int, default=0,
                         help="per-delta compressed-byte budget; zero disables rate control")
+    parser.add_argument("--quality", type=float, default=100.0,
+                        help="rate quality 0-100; 100 preserves unrestricted frames")
     parser.add_argument("--max-cell-age", type=int, default=0,
                         help="force shared-budget cells pending this many frames; zero disables")
     parser.add_argument("--cell-age-bonus", type=int, default=250000,
@@ -429,6 +462,10 @@ def main() -> None:
         raise SystemExit("--max-cell-age must be between zero and 255")
     if args.cell_age_bonus < 0:
         raise SystemExit("--cell-age-bonus must not be negative")
+    if not 0 < args.quality <= 100:
+        raise SystemExit("--quality must be greater than zero and at most 100")
+    if args.quality < 100 and (args.max_hybrid_bytes or args.clip_delta_bytes):
+        raise SystemExit("--quality below 100 cannot be combined with explicit byte budgets")
     if args.max_cell_age and args.encoder != "native":
         raise SystemExit("--max-cell-age currently requires --encoder native")
     if args.cyclic_warmup_passes and args.max_hybrid_bytes <= 0:
@@ -459,15 +496,19 @@ def main() -> None:
     with tempfile.TemporaryDirectory(prefix="svd_frames_") as temp_name:
         native_workspace = Path(temp_name) / "native"
         native_workspace.mkdir()
+        print(f"Extracting source frames at {args.fps:g} fps...", flush=True)
         extracted = extract_frames(
             args.input, Path(temp_name), args.fps, args.max_frames, args.start_seconds, args.geometry,
-            resolved_source_window,
+            resolved_source_window, args.frame_selection,
         )
         if not extracted:
             raise SystemExit("ffmpeg extracted no video frames")
+        print(f"Extracted {len(extracted)} source frames", flush=True)
         source_rgbs = [np.asarray(Image.open(path).convert("RGB"), dtype=np.float32) for path in extracted]
         auto_profile = None
         if args.auto:
+            print(f"Analyzing {len(extracted)} frames for automatic scene and material profiles...",
+                  flush=True)
             auto_profile = analyze_auto(
                 source_rgbs, brightness=args.brightness, contrast=args.contrast,
                 saturation=args.saturation, gamma=args.sierra_gamma,
@@ -564,6 +605,8 @@ def main() -> None:
         # state, making frame zero obey the same delta budget as the other frames.
         for _ in range(args.cyclic_warmup_passes):
             for index, source_path in enumerate(extracted):
+                progress(f"Performing hidden temporal warmup on frame "
+                         f"{index + 1}/{len(extracted)}")
                 source_image = Image.open(source_path).convert("RGB")
                 source_rgb = source_rgbs[index]
                 stable_cells = None
@@ -602,7 +645,8 @@ def main() -> None:
                         source_gamma=args.source_gamma, dither_strength=args.dither_strength,
                         edge_weight=args.edge_weight,
                     )
-                if auto_profile is not None:
+                if (auto_profile is not None and args.auto_static_plate and
+                        args.video_mode == "ecm"):
                     warm = apply_foreground_overlays(
                         warm, auto_profile.plate, auto_profile.foreground_cells[index],
                         auto_profile.adjusted_frames[index], auto_profile.reference,
@@ -617,7 +661,8 @@ def main() -> None:
                 if previous is not None:
                     if args.encoder == "native":
                         forced = cell_age >= args.max_cell_age if args.max_cell_age else None
-                        if auto_profile is not None:
+                        if (auto_profile is not None and args.auto_static_plate and
+                                args.video_mode == "ecm"):
                             auto_forced = auto_profile.base_cells.reshape(-1)
                             forced = auto_forced if forced is None else forced | auto_forced
                         warm, _, _ = native_rate_control_hybrid(
@@ -626,15 +671,25 @@ def main() -> None:
                     else:
                         warm, _, _ = rate_control_hybrid(
                             previous, warm, source_rgb, args.max_hybrid_bytes)
-                    if auto_profile is not None:
+                    if (auto_profile is not None and args.auto_static_plate and
+                            args.video_mode == "ecm"):
                         warm = apply_plate(warm, auto_profile.plate,
                                            auto_profile.frame_cells[index])
                 previous = warm
                 previous_source_rgb = source_rgb
+            progress_done(f"Completed hidden temporal warmup pass over {len(extracted)} frames")
         for index, source_path in enumerate(extracted):
+            encoder_name = ({"attr-32x24": "SVD-ATTR 32x24",
+                             "attr-32x192": "attribute 32x192"}.get(args.video_mode)
+                            or ("Sierra Lite" if args.dither_mode == "sierra-lite" else "legacy"))
+            progress(f"Performing ECM {encoder_name} encoding on frame "
+                     f"{index + 1}/{len(extracted)}")
             source_image = Image.open(source_path).convert("RGB")
             source_rgb = source_rgbs[index]
-            if args.dither_mode == "sierra-lite":
+            if args.video_mode != "ecm":
+                frame = encode_attribute_video(
+                    source_rgb, 24 if args.video_mode == "attr-32x24" else 192)
+            elif args.dither_mode == "sierra-lite":
                 stable_cells = None
                 if previous_source_rgb is not None:
                     motion = np.mean(np.abs(source_rgb - previous_source_rgb), axis=2)
@@ -672,7 +727,8 @@ def main() -> None:
                     dither_strength=args.dither_strength,
                     edge_weight=args.edge_weight,
                 )
-            if auto_profile is not None:
+            if (auto_profile is not None and args.auto_static_plate and
+                    args.video_mode == "ecm"):
                 frame = apply_foreground_overlays(
                     frame, auto_profile.plate, auto_profile.foreground_cells[index],
                     auto_profile.adjusted_frames[index], auto_profile.reference,
@@ -715,25 +771,35 @@ def main() -> None:
                     attribute_age, args.max_attribute_age)
                 hybrid_bytes = bitmap_bytes + attribute_bytes
                 selected_cells = bitmap_cells + attribute_cells
-            elif previous is not None and args.max_hybrid_bytes > 0:
+            elif previous is not None and (args.max_hybrid_bytes > 0 or args.quality < 100):
+                frame_budget = args.max_hybrid_bytes
+                if args.quality < 100:
+                    unrestricted_bytes = len(encode_hybrid(previous, frame)[0])
+                    frame_budget = max(2, round(unrestricted_bytes * args.quality / 100.0))
                 if args.encoder == "native":
                     candidate = frame
                     forced = cell_age >= args.max_cell_age if args.max_cell_age else None
-                    if auto_profile is not None:
+                    if (auto_profile is not None and args.auto_static_plate and
+                            args.video_mode == "ecm"):
                         auto_forced = auto_profile.base_cells.reshape(-1)
                         forced = auto_forced if forced is None else forced | auto_forced
                     frame, hybrid_bytes, selected_cells = native_rate_control_hybrid(
                         native_executable, native_workspace, previous, candidate,
-                        source_rgb, args.max_hybrid_bytes, forced, args.cell_age_bonus)
+                        source_rgb, frame_budget, forced, args.cell_age_bonus)
                     if args.max_cell_age:
                         pending = np.zeros(6144, dtype=bool)
                         for logical in range(6144):
                             y, xb = divmod(logical, 32); offset = screen_offset(y, xb)
-                            pending[logical] = frame.attributes[offset] != candidate.attributes[offset]
+                            # A cell remains pending if either display plane is stale.
+                            # Looking only at attributes allowed moved bitmap detail to
+                            # survive indefinitely as a visible trail.
+                            pending[logical] = (
+                                frame.bitmap[offset] != candidate.bitmap[offset] or
+                                frame.attributes[offset] != candidate.attributes[offset])
                         cell_age = np.where(pending, np.minimum(cell_age + 1, 255), 0).astype(np.uint8)
                 else:
                     frame, hybrid_bytes, selected_cells = rate_control_hybrid(
-                        previous, frame, source_rgb, args.max_hybrid_bytes)
+                        previous, frame, source_rgb, frame_budget)
             prefix = args.output / f"frame_{index:05d}"
             frame.write(prefix)
             rendered = frame.render()
@@ -751,6 +817,8 @@ def main() -> None:
             previous = frame
             previous_source_rgb = source_rgb
 
+        progress_done(f"Completed ECM encoding of {len(extracted)} frames")
+
     fields = list(rows[0])
     with (args.output / "statistics.csv").open("w", newline="", encoding="utf-8") as handle:
         writer = csv.DictWriter(handle, fieldnames=fields)
@@ -760,6 +828,7 @@ def main() -> None:
         "source": str(args.input.resolve()),
         "source_sha256": hashlib.sha256(args.input.read_bytes()).hexdigest(),
         "fps": args.fps,
+        "video_mode": args.video_mode,
         "start_seconds": args.start_seconds,
         "max_frames": args.max_frames,
         "source_window": resolved_source_window,
@@ -793,6 +862,7 @@ def main() -> None:
         "flat_ordered_attribute": args.flat_ordered_attribute,
         "flat_ordered_mix": args.flat_ordered_mix,
         "max_hybrid_bytes": args.max_hybrid_bytes,
+        "quality": args.quality,
         "max_cell_age": args.max_cell_age,
         "cell_age_bonus": args.cell_age_bonus,
         "cyclic_warmup_passes": args.cyclic_warmup_passes,

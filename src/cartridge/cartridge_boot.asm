@@ -379,6 +379,8 @@ COPY_FRAME:     LD      A,(IX+0)            ; 1=key table, 2=XOR, 3=hybrid
                 JP      Z,COPY_PAIRED_XOR
                 CP      10
                 JP      Z,COPY_SLICED_PAIRED
+                CP      11
+                JP      Z,COPY_SLICED_PAIRED_XOR
                 CP      2
                 JP      Z,COPY_XOR
 COPY_KEY:       LD      A,(IX+0)
@@ -680,6 +682,40 @@ COPY_PAIRED_XOR:
                 LD      D,(IX+2)
                 CALL    DECODE_PAIRED_XOR
                 JP      COPY_DONE
+
+; Reversible counterpart of COPY_SLICED_PAIRED. Each slice is a complete
+; counted paired-XOR stream, allowing the same table entry to be traversed in
+; either direction during bounce playback.
+COPY_SLICED_PAIRED_XOR:
+                LD      A,(IX+0)
+                LD      (SLICE_MASK),A
+                LD      BC,$00F4
+                OUT     (C),A
+                LD      E,(IX+1)
+                LD      D,(IX+2)
+                LD      A,(DE)
+                INC     DE
+                LD      (SLICES_LEFT),A
+SLICED_PAIRED_XOR_LOOP:
+                CALL    DECODE_PAIRED_XOR
+                LD      A,(SLICES_LEFT)
+                DEC     A
+                LD      (SLICES_LEFT),A
+                JP      Z,COPY_DONE
+SLICED_PAIRED_XOR_WAIT:
+                PUSH    DE
+                LD      A,$10
+                LD      BC,$00F4
+                OUT     (C),A
+                EI
+                HALT
+                DI
+                CALL    AUDIO_SERVICE
+                POP     DE
+                LD      A,(SLICE_MASK)
+                LD      BC,$00F4
+                OUT     (C),A
+                JR      SLICED_PAIRED_XOR_LOOP
 
 ; Raster-ordered changed cells. Each record is offset, flags, then replacement
 ; bitmap and/or attribute. The two visible planes are therefore never decoded

@@ -41,6 +41,12 @@ def test_fifo_capacity_uses_raw_keyframe_when_packbits_exceeds_one_bank():
     assert cli.stored_key_bytes(frame, "packbits", cartridge_fifo=True) == 0x3000
 
 
+def test_best_fit_capacity_rejects_bank_fragmentation():
+    cli = load_cli()
+    assert cli.best_fit_bank_local([10, 10], [6, 6, 4, 4])
+    assert not cli.best_fit_bank_local([10, 10], [6, 6, 6])
+
+
 def test_one_command_builds_both_outputs(monkeypatch, tmp_path):
     cli = load_cli()
     source = tmp_path / "input.gif"
@@ -126,6 +132,27 @@ def test_two_slice_updates_are_forwarded_to_paired_cartridge(monkeypatch, tmp_pa
     assert "--paired-cell-updates" in cartridge_args
     slice_index = cartridge_args.index("--update-slices")
     assert cartridge_args[slice_index + 1] == 2
+
+
+def test_two_slice_bounce_is_forwarded_to_paired_cartridge(monkeypatch, tmp_path):
+    cli = load_cli()
+    source = tmp_path / "input.gif"
+    source.write_bytes(b"GIF89a")
+    calls = []
+    monkeypatch.setattr(cli, "run", recording_run(calls))
+    monkeypatch.setattr(sys, "argv", [
+        "tsvideocodec.py", str(source), str(tmp_path / "output"),
+        "--format", "cartridge", "--transport", "paired", "--bounce",
+        "--update-slices", "2", "--slice-order", "bands", "--fps", "30",
+    ])
+
+    cli.main()
+
+    cartridge_args = calls[2][1]
+    assert "--bounce" in cartridge_args
+    assert "--paired-cell-updates" in cartridge_args
+    slice_index = cartridge_args.index("--update-slices")
+    assert cartridge_args[slice_index + 1:slice_index + 4] == (2, "--slice-order", "bands")
 
 
 def test_fill_space_runs_saved_sequence_fitter(monkeypatch, tmp_path):

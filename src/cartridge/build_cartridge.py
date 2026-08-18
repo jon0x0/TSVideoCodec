@@ -19,6 +19,7 @@ from fifo_hybrid import pack_fifo_hybrid
 from progress import progress, progress_done
 from svd_stream import (encode_delta, encode_hybrid, encode_paired_cells,
                         encode_sliced_paired_cells,
+                        encode_sliced_paired_xor_cells,
                         encode_paired_xor_cells, encode_row_hybrid)
 from svd_ecm import screen_offset
 CHUNK_SIZE = 0x2000
@@ -83,8 +84,6 @@ def main() -> None:
         raise SystemExit("--update-slices must be between 1 and 4")
     if args.update_slices > 1 and not args.paired_cell_updates:
         raise SystemExit("--update-slices currently requires --paired-cell-updates")
-    if args.update_slices > 1 and args.bounce:
-        raise SystemExit("sliced updates do not yet support reversible bounce playback")
     if not 0 <= args.decode_tick_compensation <= 255:
         raise SystemExit("--decode-tick-compensation must fit in one byte")
     args.output.mkdir(parents=True, exist_ok=True)
@@ -194,7 +193,10 @@ def main() -> None:
         progress(f"Compressing cartridge update frame {index}/{len(frames) - 1}")
         previous = ECMFrame(frames[index - 1][:0x1800], frames[index - 1][0x1800:])
         current = ECMFrame(frames[index][:0x1800], frames[index][0x1800:])
-        if args.bounce and (args.paired_cell_updates or args.reverse_paired_cell_updates):
+        if args.bounce and args.update_slices > 1:
+            blob, _ = encode_sliced_paired_xor_cells(previous, current, args.update_slices,
+                                                      args.slice_order)
+        elif args.bounce and (args.paired_cell_updates or args.reverse_paired_cell_updates):
             blob, _ = encode_paired_xor_cells(previous, current)
         elif args.update_slices > 1:
             blob, _ = encode_sliced_paired_cells(previous, current, args.update_slices,
@@ -275,6 +277,7 @@ def main() -> None:
         source = segments(offset, 0, len(blob))[0]
         if index < len(frames):
             frame_records.append(("fifo_hybrid" if args.fifo_packing else
+                                  "sliced_paired_xor" if args.bounce and args.update_slices > 1 else
                                   "paired_xor" if args.bounce and (args.paired_cell_updates or
                                                                     args.reverse_paired_cell_updates) else
                                   "sliced_paired" if args.update_slices > 1 else
@@ -283,7 +286,8 @@ def main() -> None:
                                   "raster" if args.raster_updates else
                                   "row_hybrid" if args.row_hybrid_updates else "hybrid", source[:2]))
             frame_stats.append({"frame": index,
-                                "frame_type": ("PAIRED_XOR_CELLS" if args.bounce and
+                                "frame_type": ("SLICED_PAIRED_XOR_CELLS" if args.bounce and args.update_slices > 1 else
+                                               "PAIRED_XOR_CELLS" if args.bounce and
                                                                     (args.paired_cell_updates or args.reverse_paired_cell_updates) else
                                                "SLICED_PAIRED_CELLS" if args.update_slices > 1 else
                                                "PAIRED_CELLS_REVERSE" if args.reverse_paired_cell_updates else
@@ -329,7 +333,7 @@ def main() -> None:
             lines.append(f"                DB      8,{offset // CHUNK_SIZE}\n                DW      ${source:04X}")
         else:
             mask, source = records
-            record_type = 10 if kind == "sliced_paired" else 9 if kind == "paired_xor" else 6 if kind == "paired" else 4 if kind == "raster" else 5 if kind == "row_hybrid" else 3
+            record_type = 11 if kind == "sliced_paired_xor" else 10 if kind == "sliced_paired" else 9 if kind == "paired_xor" else 6 if kind == "paired" else 4 if kind == "raster" else 5 if kind == "row_hybrid" else 3
             lines.append(f"                DB      {record_type},${mask:02X}\n                DW      ${source:04X}")
     if args.bounce:
         loop_indices = bounce_table_indices(len(frames), False)

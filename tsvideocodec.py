@@ -19,7 +19,7 @@ from keyframe_codec import encode_packbits
 from svd_ecm import ECMFrame
 from svd_stream import (encode_delta, encode_hybrid, encode_paired_cells,
                         encode_paired_xor_cells, encode_row_hybrid,
-                        encode_sliced_paired_cells)
+                        encode_sliced_paired_cells, encode_sliced_paired_xor_cells)
 
 ROOT = Path(__file__).parent
 
@@ -73,6 +73,19 @@ def append_bank_local(cursor: int, sizes: list[int]) -> int:
     return cursor
 
 
+def best_fit_bank_local(capacities: list[int], sizes: list[int]) -> bool:
+    """Mirror the cartridge builder's best-fit-decreasing record placement."""
+    remaining = list(capacities)
+    for size in sorted(sizes, reverse=True):
+        candidates = [(space, index) for index, space in enumerate(remaining)
+                      if space >= size]
+        if not candidates:
+            return False
+        _, index = min(candidates)
+        remaining[index] -= size
+    return True
+
+
 def output_blobs(frames: list[ECMFrame], *, tap: bool, transport: str,
                  update_slices: int, slice_order: str, bounce: bool) -> list[bytes]:
     blobs: list[bytes] = []
@@ -82,8 +95,9 @@ def output_blobs(frames: list[ECMFrame], *, tap: bool, transport: str,
             blob, _ = (encode_paired_xor_cells(previous, current) if bounce
                        else encode_delta(previous, current))
         elif update_slices > 1:
-            blob, _ = encode_sliced_paired_cells(
-                previous, current, update_slices, slice_order)
+            blob, _ = (encode_sliced_paired_xor_cells(
+                previous, current, update_slices, slice_order) if bounce else
+                encode_sliced_paired_cells(previous, current, update_slices, slice_order))
         elif transport == "paired":
             blob, _ = (encode_paired_xor_cells(previous, current) if bounce
                        else encode_paired_cells(previous, current))
@@ -130,13 +144,33 @@ def output_capacity(frames: list[ECMFrame], *, target: str, key_codec: str,
             cursor += len(pack_fifo_hybrid(blob, cursor))
         used = cursor
         largest = 0
-    else:
+        fits = used <= capacity
+    elif tap:
         event_overhead = ((2 * len(audio_sizes) +
                            (2 * len(frames) - 2 if bounce else len(frames)))
                           if tap and audio_sizes else 0)
         used = key_bytes + sum(map(len, blobs)) + sum(audio_sizes) + event_overhead
-        largest = 0 if tap else max([*map(len, blobs), *audio_sizes], default=0)
-    fits = used <= capacity and (tap or largest <= 0x2000)
+        largest = 0
+        fits = used <= capacity
+    else:
+        key_planes = [encode_packbits(frames[0].bitmap),
+                      encode_packbits(frames[0].attributes)]
+        compressed_key_size = sum(map(len, key_planes))
+        actual_key_codec = key_codec
+        if actual_key_codec == "auto":
+            actual_key_codec = ("packbits" if compressed_key_size + 256 < 0x3000
+                                else "raw")
+        if actual_key_codec == "raw":
+            capacities = [0x1000] + [0x2000] * 5
+            item_sizes = [*audio_sizes, *map(len, blobs)]
+            key_bytes = 0x3000
+        else:
+            capacities = [0x2000] * 7
+            item_sizes = [*map(len, key_planes), *audio_sizes, *map(len, blobs)]
+            key_bytes = compressed_key_size
+        used = key_bytes + sum(map(len, blobs)) + sum(audio_sizes)
+        largest = max(item_sizes, default=0)
+        fits = best_fit_bank_local(capacities, item_sizes)
     return {"fits": fits, "used": used, "capacity": capacity,
             "key_bytes": key_bytes, "largest": largest}
 
@@ -301,8 +335,6 @@ def main() -> None:
     if args.update_slices > 1:
         if args.format != "cartridge" or args.transport != "paired":
             parser.error("--update-slices 2 currently requires cartridge --transport paired")
-        if args.bounce:
-            parser.error("--update-slices 2 does not yet support bounce playback")
         if effective_fps > 30:
             parser.error("--update-slices 2 requires an output rate of 30 fps or less")
     rate = Fraction(str(effective_fps)).limit_denominator(255)
@@ -378,71 +410,21 @@ def main() -> None:
         if args.bounce and 2 * len(candidate_frames) - 2 > 255:
             parser.error("bounce playback exceeds the 255-entry cartridge frame table")
 
-        def transport_blobs(items: list[ECMFrame], tap: bool) -> list[bytes]:
-            blobs: list[bytes] = []
-            for index in range(1, len(items)):
-                if tap:
-                    blob, _ = (encode_paired_xor_cells(items[index - 1], items[index])
-                               if args.bounce else encode_delta(items[index - 1], items[index]))
-                elif args.update_slices > 1:
-                    blob, _ = encode_sliced_paired_cells(
-                        items[index - 1], items[index], args.update_slices, args.slice_order)
-                elif args.transport == "paired":
-                    blob, _ = (encode_paired_xor_cells(items[index - 1], items[index])
-                               if args.bounce else encode_paired_cells(items[index - 1], items[index]))
-                elif args.transport == "raster":
-                    blob, _ = encode_delta(items[index - 1], items[index])
-                elif args.transport == "row-hybrid":
-                    blob, _ = encode_row_hybrid(items[index - 1], items[index])
-                else:
-                    blob, _ = encode_hybrid(items[index - 1], items[index])
-                blobs.append(blob)
-            if not args.bounce:
-                if tap or args.transport == "raster":
-                    loop, _ = encode_delta(items[-1], items[0])
-                elif args.update_slices > 1:
-                    loop, _ = encode_sliced_paired_cells(
-                        items[-1], items[0], args.update_slices, args.slice_order)
-                elif args.transport == "paired":
-                    loop, _ = encode_paired_cells(items[-1], items[0])
-                elif args.transport == "row-hybrid":
-                    loop, _ = encode_row_hybrid(items[-1], items[0])
-                else:
-                    loop, _ = encode_hybrid(items[-1], items[0])
-                blobs.append(loop)
-            return blobs
-
         def capacity_status(items: list[ECMFrame]) -> tuple[bool, str]:
             reports = []
             okay = True
-            if args.format in ("tap", "both"):
-                key_bytes = stored_key_bytes(items[0], args.keyframe_codec)
-                blobs = transport_blobs(items, True)
-                playback_count = 2 * len(items) - 2 if args.bounce else len(items)
-                audio_overhead = (sum(audio_sizes) + 2 * len(audio_sizes) + playback_count
-                                  if audio_sizes else 0)
-                used = key_bytes + sum(map(len, blobs)) + audio_overhead
-                capacity = 0xE000 - 0x7800 - 1024
-                reports.append(f"TAP {used}/{capacity}")
-                okay &= used <= capacity
-            if args.format in ("cartridge", "both"):
-                key_bytes = stored_key_bytes(
-                    items[0], args.keyframe_codec,
-                    cartridge_fifo=args.transport == "hybrid" and args.fifo_packing)
-                blobs = transport_blobs(items, False)
-                capacity = 7 * 0x2000
-                if args.transport == "hybrid" and args.fifo_packing:
-                    cursor = append_bank_local(key_bytes, audio_sizes)
-                    for blob in blobs:
-                        cursor += len(pack_fifo_hybrid(blob, cursor))
-                    used = cursor
-                    largest = 0
-                else:
-                    used = key_bytes + sum(map(len, blobs)) + sum(audio_sizes)
-                    largest = max([*map(len, blobs), *audio_sizes], default=0)
-                    okay &= largest <= 0x2000
-                reports.append(f"cartridge {used}/{capacity}, largest={largest}")
-                okay &= used <= capacity
+            selected_targets = (["tap"] if args.format == "tap" else ["cartridge"]
+                                if args.format == "cartridge" else ["tap", "cartridge"])
+            for target in selected_targets:
+                report = output_capacity(
+                    items, target=target, key_codec=args.keyframe_codec,
+                    transport=args.transport, fifo_packing=args.fifo_packing,
+                    update_slices=args.update_slices, slice_order=args.slice_order,
+                    bounce=args.bounce, audio_sizes=audio_sizes)
+                label = "TAP" if target == "tap" else "cartridge"
+                reports.append(f"{label} {report['used']}/{report['capacity']}, "
+                               f"largest={report['largest']}")
+                okay &= bool(report["fits"])
             return bool(okay), "; ".join(reports)
 
         unrestricted_ok, unrestricted_report = capacity_status(candidate_frames)

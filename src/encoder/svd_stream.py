@@ -313,6 +313,39 @@ def encode_sliced_paired_cells(previous: ECMFrame, current: ECMFrame,
     return bytes(payload), FrameStats("SLICED_PAIRED_CELLS", len(payload))
 
 
+def encode_sliced_paired_xor_cells(previous: ECMFrame, current: ECMFrame,
+                                   slices: int, order: str = "interlaced") -> tuple[bytes, FrameStats]:
+    """Encode reversible paired-XOR cells in successive raster slices."""
+    if not 2 <= slices <= 4:
+        raise ValueError("sliced paired-XOR updates require 2 to 4 slices")
+    if order not in ("interlaced", "bands"):
+        raise ValueError("sliced paired-XOR order must be interlaced or bands")
+    payload = bytearray([slices])
+    raster_rows = PLANE_SIZE // 32
+    for slice_index in range(slices):
+        records = bytearray()
+        count = 0
+        rows = (range(slice_index, raster_rows, slices) if order == "interlaced" else
+                range((raster_rows * slice_index) // slices,
+                      (raster_rows * (slice_index + 1)) // slices))
+        for y in rows:
+            for x_byte in range(32):
+                offset = screen_offset(y, x_byte)
+                bitmap_xor = previous.bitmap[offset] ^ current.bitmap[offset]
+                attribute_xor = previous.attributes[offset] ^ current.attributes[offset]
+                flags = bool(bitmap_xor) | (bool(attribute_xor) << 1)
+                if not flags:
+                    continue
+                records += struct.pack("<HB", offset, flags)
+                if flags & 1:
+                    records.append(bitmap_xor)
+                if flags & 2:
+                    records.append(attribute_xor)
+                count += 1
+        payload += struct.pack("<H", count) + records
+    return bytes(payload), FrameStats("SLICED_PAIRED_XOR_CELLS", len(payload))
+
+
 def decode_sliced_paired_cells(previous: ECMFrame, payload: bytes) -> ECMFrame:
     """Reference decoder for the concatenated counted raster slices."""
     if not payload or not 2 <= payload[0] <= 4:
@@ -335,6 +368,31 @@ def decode_sliced_paired_cells(previous: ECMFrame, payload: bytes) -> ECMFrame:
         position = end
     if position != len(payload):
         raise ValueError("trailing sliced paired-cell payload bytes")
+    return current
+
+
+def decode_sliced_paired_xor_cells(previous: ECMFrame, payload: bytes) -> ECMFrame:
+    """Reference decoder for reversible counted paired-XOR slices."""
+    if not payload or not 2 <= payload[0] <= 4:
+        raise ValueError("invalid sliced paired-XOR header")
+    current = previous
+    position = 1
+    for _ in range(payload[0]):
+        if position + 2 > len(payload):
+            raise ValueError("truncated sliced paired-XOR count")
+        count = struct.unpack_from("<H", payload, position)[0]
+        end = position + 2
+        for _ in range(count):
+            if end + 3 > len(payload):
+                raise ValueError("truncated sliced paired-XOR record")
+            flags = payload[end + 2]
+            if flags not in (1, 2, 3):
+                raise ValueError("invalid sliced paired-XOR flags")
+            end += 3 + bool(flags & 1) + bool(flags & 2)
+        current = decode_paired_xor_cells(current, payload[position:end])
+        position = end
+    if position != len(payload):
+        raise ValueError("trailing sliced paired-XOR payload bytes")
     return current
 
 

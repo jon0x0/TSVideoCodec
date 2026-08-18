@@ -105,6 +105,12 @@ directions. For N stored frames, the player presents `2*N-2` positions without
 duplicating frames or delta payload. This is currently a player transport
 record rather than a frozen SVD v0 stream opcode.
 
+Cartridge record type 11 wraps the same reversible paired-XOR cells in the
+type-10 sliced container: one slice-count byte followed by that many counted
+paired-XOR streams. The player waits for a display tick between streams. Both
+`interlaced` and `bands` are packer ordering policies; no order flag is needed
+because every record carries absolute display-plane offsets.
+
 ### Measured sparse-delta experiment
 
 Frame type 4 stores two counted lists of absolute-address/value records: bitmap

@@ -21,8 +21,11 @@ def main() -> None:
     parser.add_argument("--fuse", type=Path, default=DEFAULT_FUSE)
     args = parser.parse_args()
 
-    boundary = symbol_address(args.build / "cartridge_boot.symbols", "SLICE_WAIT")
     dck = args.build / "svd_video_64k.dck"
+    manifest = json.loads((args.build / "manifest.json").read_text())
+    boundary_label = ("SLICED_PAIRED_XOR_WAIT" if manifest.get("bounce")
+                      else "SLICE_WAIT")
+    boundary = symbol_address(args.build / "cartridge_boot.symbols", boundary_label)
     captured = bytearray()
     for base in (0x4000, 0x6000):
         for offset in range(0, 0x1800, 0x400):
@@ -33,7 +36,6 @@ def main() -> None:
         raise SystemExit("two-slice validation requires at least two frames")
     first = prefixes[0].read_bytes() + prefixes[0].with_suffix(".atr").read_bytes()
     second = prefixes[1].read_bytes() + prefixes[1].with_suffix(".atr").read_bytes()
-    manifest = json.loads((args.build / "manifest.json").read_text())
     order = manifest.get("slice_order", "bands")
     expected = bytearray(first)
     for plane in (0, 0x1800):

@@ -148,12 +148,14 @@ The default amigaboing build is:
 python tsvideocodec.py video\amigaboing.gif build\amigaboing_best `
   --format cartridge `
   --fill-space `
-  --transport hybrid `
-  --fifo-packing `
+  --transport paired `
+  --update-slices 2 `
+  --slice-order interlaced `
   --keyframe-codec packbits `
   --max-frames 22 `
   --encoder native `
   --no-auto `
+  --max-cell-age 1 `
   --bounce `
   --auto-plate-encoder sierra-hybrid `
   --auto-material-dither shell-aware `
@@ -175,6 +177,12 @@ zero-based playback positions: 22 frames provide positions 0-41. The original
 address event 40. If capacity requires reducing this example to 21 stored
 frames, change the last event to `39:0`; reducing to 20 requires `37:0`. The CLI
 reports the valid playback range rather than silently moving an event.
+The paired-XOR updates are divided across two 60 Hz ticks on both legs of the
+bounce, reducing each visible write burst. Remove `--update-slices 2` (or set
+it to 1) to compare the ordinary one-tick paired-XOR decoder. Because paired
+records cost more space than hybrid deltas, `--max-cell-age 1` gives restoration
+priority to a cell on the update after it was deferred, limiting persistent
+trails in the capacity-fitted result.
 
 `--clean-cell-error 0.04` suppresses false texture in the flat gray grid while
 leaving the intermediate gray ball shadow above the threshold, where Sierra
@@ -217,7 +225,7 @@ python tsvideocodec.py video\Kahnankas.mp4 build\kahn --format cartridge --keyfr
 
 This performs frame extraction, automatic ECM encoding, SVD stream packing,
 and cartridge assembly. The output is
-`build/example/cartridge/svd_video_64k.dck`.
+`build/kahn/cartridge/svd_video_64k.dck`.
 
 For a TAP instead:
 
@@ -272,8 +280,10 @@ python tsvideocodec.py input.gif build/sliced --format cartridge \
 
 The default interlaced order applies alternate scanlines, waits for the next
 display tick, and then applies the remaining lines. `--slice-order bands`
-selects the original upper/lower diagnostic layout. This opt-in mode is limited to 30 fps or below;
-`--update-slices 1` keeps the normal decoder. Bounce is not yet supported.
+selects upper/lower raster bands. This opt-in mode is limited to cartridge
+`paired` transport at 30 fps or below; `--update-slices 1` keeps the normal
+decoder. Bounce uses reversible sliced paired-XOR records, so the same slices
+are valid on both the forward and reverse legs.
 
 To animate a 4:3 window within a larger movie, give its upper-left position
 and right edge as fractions of the source dimensions:
@@ -292,8 +302,85 @@ are known, use `--source-window-pixels 576,324,1152` instead. Cropping occurs
 before scaling and automatic clip analysis. Without either option, the full
 source frame is used as before.
 
-Run `python tsvideocodec.py --help` for all options. Pasmo 0.5.5 must be on
-`PATH`, named by `PASMO`, or supplied with `--pasmo`.
+### Complete `tsvideocodec.py` command-line reference
+
+The command form is `python tsvideocodec.py INPUT OUTPUT [OPTIONS]`. `INPUT`
+is any still, GIF, or video supported by Pillow/FFmpeg. `OUTPUT` is the generated
+working directory and artifact destination. `-h`/`--help` prints the live
+parser help without processing media.
+
+#### Source, sampling, and output
+
+| Option | Default / range | Behavior |
+| --- | --- | --- |
+| `--format cartridge\|tap\|both` | `cartridge` | Selects a 64 KB DCK/BIN cartridge, TAP, or both. |
+| `--video-mode ecm\|attr-32x24\|attr-32x192` | `ecm` | Full 256x192 ECM, 32x24 attribute video, or 32x192 scanline-attribute video. |
+| `--fps N` | `12`; source cadence when `--fill-space` | Positive output/playback cadence. |
+| `--max-frames N` | `12`; `N >= 0` | Limits samples before ECM encoding. Zero selects all samples. |
+| `--frame-selection first\|even` | `first` | Uses the first N samples or distributes N across the complete source. `even` requires positive `--max-frames`. |
+| `--start-seconds S` | `0`; `S >= 0` | Starts source sampling S seconds from the beginning. |
+| `--geometry fit\|crop` | `fit` | Letterboxes the complete image or center-crops it to 4:3 before scaling. |
+| `--source-window X,Y,RIGHT` | unset; normalized fractions | Selects a 4:3 window using normalized upper-left coordinates and right edge. Mutually exclusive with the pixel form. |
+| `--source-window-pixels X,Y,WIDTH` | unset; source pixels | Selects a 4:3 window by upper-left pixel and maximum width. |
+| `--reuse-sequence` | off | Reuses `OUTPUT/sequence` and resumes fitting/packaging instead of extracting and encoding again. Settings must match the saved sequence. |
+
+#### ECM encoding and rate control
+
+| Option | Default / range | Behavior |
+| --- | --- | --- |
+| `--encoder python\|native` | `python` | Chooses the portable reference encoder or compiled C encoder. Native-only controls below require `native`. |
+| `--quality Q` | `100`; `0 < Q <= 100` | Percentage of unrestricted reconstructed frame-update bytes. Cannot be combined with explicit delta budgets below 100. |
+| `--fill-space` | off | Searches for the highest quality that fits the selected output capacity. `--fit-cartridge` is a deprecated hidden alias. Requires delta loop transition. |
+| `--max-hybrid-bytes N` | `0`; `N >= 0` | Expert per-frame reconstructed hybrid-delta ceiling. Zero disables it. |
+| `--clip-delta-bytes N` | `0`; `N >= 0` | Exact total budget shared across non-key frames. Mutually exclusive with `--max-hybrid-bytes`. |
+| `--clip-min-frame-bytes N` | `200`; `N >= 1` | Minimum update allocation during whole-clip rate control. |
+| `--clip-max-frame-bytes N` | `0`; `N >= 0` | Maximum update allocation during whole-clip rate control; zero means no explicit maximum. |
+| `--keyframe-codec raw\|packbits\|auto` | `auto` | Stores the initial cartridge frame raw, PackBits-compressed, or whichever is practical/smaller. |
+| `--dither-mode sierra-lite\|legacy` | `sierra-lite` | Spatial quantizer. The native backend currently supports Sierra Lite only. |
+| `--temporal-attr-penalty N` | `0.01`; `N >= 0` | Penalizes changing an 8x1 cell's ECM ink/paper attribute. Higher values reduce chroma traffic but can retain old colors longer. |
+| `--temporal-pixel-penalty N` | `0.01`; `N >= 0` | Penalizes bitmap-bit changes. Higher values reduce luma/detail traffic but can create trails. |
+| `--max-cell-age N` | `4` for native auto, otherwise `0`; `0..255` | Forces a deferred cell after N frames. Zero disables age forcing; native encoder only. |
+| `--cell-age-bonus N` | `250000`; `N >= 0` | Rate-distortion priority added to cells that reach maximum age. |
+| `--clean-cell-error E` | `0`; `E >= 0` | Native-only linear-RGB endpoint-error threshold for clean two-color cells. Zero disables it. |
+| `--native-colour-snap-error E` | `0`; `E >= 0` | Native-only per-pixel threshold for suppressing diffusion on near-native colors while retaining Sierra for intermediate colors. American spelling `--native-color-snap-error` is accepted. |
+
+#### Automatic scene analysis
+
+| Option | Default / range | Behavior |
+| --- | --- | --- |
+| `--auto` / `--no-auto` | auto enabled | Enables or disables source-derived static-plate and foreground analysis. |
+| `--auto-colour-policy faithful\|quiet` | `faithful` | Favors source color fidelity or lower temporal color activity. American `--auto-color-policy` is accepted. |
+| `--auto-plate-encoder sierra-structure\|sierra-texture\|sierra-hybrid\|sierra\|ordered` | `ordered` | Chooses how automatically detected persistent material is represented. Ignored with `--no-auto`. |
+| `--auto-material-dither sierra-line\|shell-aware\|ordered-bayer\|solid-dark` | `sierra-line` | Selects generic moving-material treatment. Ignored with `--no-auto`. |
+| `--auto-static-plate` / `--no-auto-static-plate` | enabled | Enables the persistent-region plate independently of other auto analysis. |
+| `--background-motion-threshold N` | `8.0`; `N >= 0` | Mean RGB-change threshold below which an 8x1 cell is considered stable. |
+| `--background-penalty-multiplier N` | `4.0`; `N >= 1` | Multiplies temporal penalties for stable cells. |
+
+#### Playback, transport, and looping
+
+| Option | Default / range | Behavior |
+| --- | --- | --- |
+| `--transport hybrid\|paired\|row-hybrid\|raster` | `paired` | Cartridge delta representation. TAP currently uses its own raster/paired-XOR player path. |
+| `--fifo-packing` | off | Packs hybrid cartridge data continuously across banks. Requires `--transport hybrid`. |
+| `--update-slices 1\|2` | `1` | With cartridge paired transport, applies one logical update in one or two successive 60 Hz ticks. Two slices require output FPS no greater than 30. |
+| `--slice-order interlaced\|bands` | `interlaced` | For two slices, alternates scanlines or divides the screen into upper/lower bands. Works with replacement and reversible bounce XOR updates. |
+| `--bounce` | off | Plays `0..N-1..1` using reversible deltas without duplicate stored frames. Requires looping and delta transition. |
+| `--loop` / `--no-loop` | loop enabled | Enables repeated playback. `--no-loop` is cartridge-only. |
+| `--loop-transition delta\|keyframe` | `delta` | Uses a last-to-first delta or redisplays the original keyframe. Keyframe transition is cartridge-only; fill-space and bounce require delta. |
+| `--loop-pause-frames N` | `0`; `N >= 0` | Holds the loop endpoint for N display ticks. |
+
+#### Toolchain and audio
+
+| Option | Default / range | Behavior |
+| --- | --- | --- |
+| `--pasmo PATH` | `PASMO`, then `PATH` | Selects Pasmo 0.5.5 or a compatible wrapper, including a WSL wrapper on Windows. |
+| `--audio2ay FILE` | none; repeatable, at most 255 | Packs an audio2ay `.dat` effect. Indices follow command-line order starting at zero. Alias: `--audio2ay-sound`. |
+| `--audio2ay-play FRAME:INDEX` | none; repeatable | Starts a loaded sound at a zero-based playback position. Bounce positions include the reverse leg. |
+
+Audio is serviced at 60 Hz even when video FPS is lower. Press and release `S`
+during playback to toggle sound. The CLI validates important cross-option
+constraints and reports capacity alternatives when selected settings do not fit.
+Pasmo 0.5.5 must be on `PATH`, named by `PASMO`, or supplied with `--pasmo`.
 
 ### Equivalent individual stages
 

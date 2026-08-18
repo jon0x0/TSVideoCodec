@@ -177,16 +177,22 @@ the TS2068 is still scanning the same display memory being modified.
 raster slices. By default, alternate scanlines are assigned to each slice so
 the intermediate state retains structure across the whole image;
 `--slice-order bands` selects upper/lower bands for diagnosis. Record type 10 contains a slice count followed by two
-ordinary counted paired-cell streams. The player decodes the upper band,
+ordinary counted paired-cell streams. The player decodes the first slice,
 temporarily restores HOME ROM mapping so the IM 1 vector is valid, waits for
-the next 60 Hz tick, restores the media bank, and decodes the lower band.
+the next 60 Hz tick, restores the media bank, and decodes the second slice.
 Bitmap and attribute remain paired within every changed 8x1 cell.
 
 The normal presentation deadline still applies to the logical frame. At 30
 fps the bands consume the two available 60 Hz periods; at lower rates the
 completed frame is held for the remaining ticks. The mode reduces each write
-burst but exposes one coherent partially updated state. It is opt-in, cartridge-only,
-limited to paired transport and 30 fps or below, and currently excludes bounce.
+burst but exposes one coherent partially updated state. It is opt-in,
+cartridge-only, and limited to paired transport and 30 fps or below.
+
+Bounce uses record type 11, sliced paired-XOR. Its container is identical to
+type 10, but each counted slice stores XOR masks rather than replacement bytes.
+Every slice and the complete record are therefore reversible. The forward and
+reverse pointer tables reuse the same payload and preserve the selected
+interlaced or band ordering on both legs.
 
 ### Reversible bounce playback
 
@@ -205,6 +211,8 @@ record because its normal raster-replacement deltas are also directional. Each c
 an offset, plane flags, and bitmap and/or attribute XOR masks. Applying the
 record to either endpoint reconstructs the other endpoint while retaining the
 anti-tearing benefit of updating both visible planes together.
+Cartridge bounce may additionally split each type-9 update into a type-11
+sliced record, waiting for a 60 Hz tick between its counted XOR streams.
 
 ## audio2ay sound-effect scheduling
 

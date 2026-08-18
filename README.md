@@ -162,11 +162,11 @@ python tsvideocodec.py video\amigaboing.gif build\amigaboing_best `
   --audio2ay ..\tssoundfx\boingw.dat `
   --audio2ay-play 8:1 `
   --audio2ay-play 20:0 `
-  --audio2ay-play 31:1 `
+  --audio2ay-play 32:1 `
   --audio2ay-play 40:0
 ```
 
-Here sound 1 (`boingw`) starts at frames 8 and 31, while sound 0 (`boingf`)
+Here sound 1 (`boingw`) starts at frames 8 and 32, while sound 0 (`boingf`)
 starts at frames 20 and 40. This uses 22 stored frames because bounce exposes `2*N-2`
 zero-based playback positions: 22 frames provide positions 0-41. The original
 `--max-frames 20` setting provides only positions 0-37 and therefore cannot

@@ -41,6 +41,21 @@ Use `--native-encoder PATH` for a non-default executable location. The
 existing `--encoder python` backend remains available as an independent
 reference implementation.
 
+`--clean-cell-error E` is an optional native Sierra mode for quiet flat or
+two-colour material. It selects the ECM pair with the lowest direct endpoint
+error when that per-pixel linear-RGB error is at most `E`, then stops diffusion
+at that cell. For example, `--clean-cell-error 0.04` cleans the amigaboing grid
+while leaving its intermediate gray shadow available to Sierra Lite, preserving
+shading and magenta lines through the shadow. The default `0` keeps the
+original diffusion behavior.
+
+`--native-colour-snap-error E` applies a tighter test per pixel. Near-native
+pixels use their selected endpoint without emitting or receiving diffusion
+error, while intermediate colours continue through Sierra Lite. A value such
+as `0.005` cleans red/white interiors without suppressing useful mixed-colour
+dithering. The spelling `--native-color-snap-error` is accepted by the Python
+front ends.
+
 The one-command front end also passes `--encoder native` to the whole-clip
 cartridge fitter. Its saved-frame rate-control pass invokes the C
 `rate-hybrid` command for the ranked-cell sort, binary budget search, and

@@ -34,6 +34,8 @@ def native_sierra_encoder(
     temporal_pixel_penalty: float, stable_penalty_multiplier: float,
     flat_ordered_variance: float,
     flat_solid_variance: float,
+    clean_cell_error: float,
+    native_colour_snap_error: float,
     flat_solid_background_distance: float, flat_solid_max_y: int,
     flat_ordered_attribute: int,
     flat_ordered_mix: float,
@@ -51,6 +53,8 @@ def native_sierra_encoder(
                "--stable-penalty-multiplier", str(stable_penalty_multiplier)]
     command += ["--flat-ordered-variance", str(flat_ordered_variance)]
     command += ["--flat-solid-variance", str(flat_solid_variance)]
+    command += ["--clean-cell-error", str(clean_cell_error)]
+    command += ["--native-colour-snap-error", str(native_colour_snap_error)]
     command += ["--flat-solid-background-distance", str(flat_solid_background_distance),
                 "--flat-solid-max-y", str(flat_solid_max_y),
                 "--flat-ordered-attribute", str(flat_ordered_attribute),
@@ -418,6 +422,10 @@ def main() -> None:
                         help="use ordered dithering below this linear RGB cell variance; zero disables")
     parser.add_argument("--flat-solid-variance", type=float, default=0.0,
                         help="use one nearest palette colour below this cell variance; zero disables")
+    parser.add_argument("--clean-cell-error", type=float, default=0.0,
+                        help="directly quantize cells already represented by their two ECM colours; zero disables")
+    parser.add_argument("--native-colour-snap-error", "--native-color-snap-error", type=float, default=0.0,
+                        help="snap pixels close to an ECM endpoint while retaining diffusion elsewhere; zero disables")
     parser.add_argument("--flat-solid-background-distance", type=float, default=float("inf"),
                         help="restrict flat ordered/solid cells to the scanline's left-edge background")
     parser.add_argument("--flat-solid-max-y", type=int, default=192)
@@ -468,6 +476,14 @@ def main() -> None:
         raise SystemExit("--quality below 100 cannot be combined with explicit byte budgets")
     if args.max_cell_age and args.encoder != "native":
         raise SystemExit("--max-cell-age currently requires --encoder native")
+    if args.clean_cell_error < 0:
+        raise SystemExit("--clean-cell-error must not be negative")
+    if args.clean_cell_error and args.encoder != "native":
+        raise SystemExit("--clean-cell-error currently requires --encoder native")
+    if args.native_colour_snap_error < 0:
+        raise SystemExit("--native-colour-snap-error must not be negative")
+    if args.native_colour_snap_error and args.encoder != "native":
+        raise SystemExit("--native-colour-snap-error currently requires --encoder native")
     if args.cyclic_warmup_passes and args.max_hybrid_bytes <= 0:
         raise SystemExit("cyclic warmup currently requires --max-hybrid-bytes")
     if args.encoder == "native" and args.dither_mode != "sierra-lite":
@@ -524,7 +540,8 @@ def main() -> None:
                         saturation=args.saturation, gamma=args.sierra_gamma,
                         temporal_attr_penalty=0, temporal_pixel_penalty=0,
                         stable_penalty_multiplier=1,
-                        flat_ordered_variance=0, flat_solid_variance=0,
+                        flat_ordered_variance=0, flat_solid_variance=0, clean_cell_error=0,
+                        native_colour_snap_error=0,
                         flat_solid_background_distance=float("inf"), flat_solid_max_y=192,
                         flat_ordered_attribute=-1, flat_ordered_mix=-1)
                 else:
@@ -624,6 +641,8 @@ def main() -> None:
                             stable_penalty_multiplier=args.background_penalty_multiplier,
                             flat_ordered_variance=args.flat_ordered_variance,
                             flat_solid_variance=args.flat_solid_variance,
+                            clean_cell_error=args.clean_cell_error,
+                            native_colour_snap_error=args.native_colour_snap_error,
                             flat_solid_background_distance=args.flat_solid_background_distance,
                             flat_solid_max_y=args.flat_solid_max_y,
                             flat_ordered_attribute=args.flat_ordered_attribute,
@@ -704,6 +723,8 @@ def main() -> None:
                         stable_penalty_multiplier=args.background_penalty_multiplier,
                         flat_ordered_variance=args.flat_ordered_variance,
                         flat_solid_variance=args.flat_solid_variance,
+                        clean_cell_error=args.clean_cell_error,
+                        native_colour_snap_error=args.native_colour_snap_error,
                         flat_solid_background_distance=args.flat_solid_background_distance,
                         flat_solid_max_y=args.flat_solid_max_y,
                         flat_ordered_attribute=args.flat_ordered_attribute,
@@ -855,6 +876,8 @@ def main() -> None:
         "background_penalty_multiplier": args.background_penalty_multiplier,
         "flat_ordered_variance": args.flat_ordered_variance,
         "flat_solid_variance": args.flat_solid_variance,
+        "clean_cell_error": args.clean_cell_error,
+        "native_colour_snap_error": args.native_colour_snap_error,
         "flat_solid_background_distance": args.flat_solid_background_distance,
         "flat_solid_max_y": args.flat_solid_max_y,
         "auto_solid_upper_background": args.auto_solid_upper_background,

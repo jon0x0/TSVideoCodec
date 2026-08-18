@@ -53,6 +53,8 @@ def test_one_command_builds_both_outputs(monkeypatch, tmp_path):
         "--fps", "12.5", "--max-frames", "8", "--geometry", "crop",
         "--source-window", "0.3,0.3,0.6",
         "--encoder", "native", "--transport", "row-hybrid",
+        "--clean-cell-error", "0.04",
+        "--native-colour-snap-error", "0.005",
         "--pasmo", "custom-pasmo",
     ])
 
@@ -67,6 +69,8 @@ def test_one_command_builds_both_outputs(monkeypatch, tmp_path):
     encoder_args = calls[0][1]
     assert encoder_args[encoder_args.index("--max-hybrid-bytes") + 1] == 0
     assert encoder_args[encoder_args.index("--quality") + 1] == 100.0
+    assert encoder_args[encoder_args.index("--clean-cell-error") + 1] == 0.04
+    assert encoder_args[encoder_args.index("--native-colour-snap-error") + 1] == 0.005
     window_index = encoder_args.index("--source-window")
     assert encoder_args[window_index + 1] == "0.3,0.3,0.6"
     cartridge_args = calls[2][1]

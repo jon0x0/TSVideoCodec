@@ -198,6 +198,10 @@ def main() -> None:
                         help="apply auto-detected persistent regions; disable to diagnose false static masks")
     parser.add_argument("--background-motion-threshold", type=float, default=8.0)
     parser.add_argument("--background-penalty-multiplier", type=float, default=4.0)
+    parser.add_argument("--clean-cell-error", type=float, default=0.0,
+                        help="suppress Sierra noise in cells already represented well by their ECM colours")
+    parser.add_argument("--native-colour-snap-error", "--native-color-snap-error", type=float, default=0.0,
+                        help="snap near-native pixels without disabling Sierra diffusion for intermediate colours")
     parser.add_argument("--max-cell-age", type=int, default=None,
                         help="force deferred bitmap/colour restoration after this many frames; "
                              "defaults to 4 for native --auto, 0 disables")
@@ -252,6 +256,14 @@ def main() -> None:
         parser.error("--max-cell-age must be between zero and 255")
     if args.max_cell_age and args.encoder != "native":
         parser.error("--max-cell-age currently requires --encoder native")
+    if args.clean_cell_error < 0:
+        parser.error("--clean-cell-error cannot be negative")
+    if args.clean_cell_error and args.encoder != "native":
+        parser.error("--clean-cell-error currently requires --encoder native")
+    if args.native_colour_snap_error < 0:
+        parser.error("--native-colour-snap-error cannot be negative")
+    if args.native_colour_snap_error and args.encoder != "native":
+        parser.error("--native-colour-snap-error currently requires --encoder native")
     if args.clip_delta_bytes < 0 or args.clip_min_frame_bytes < 1 or args.clip_max_frame_bytes < 0:
         parser.error("clip byte budgets must be non-negative and minimum must be positive")
     if args.clip_delta_bytes and args.max_hybrid_bytes:
@@ -313,6 +325,8 @@ def main() -> None:
         "--auto-material-dither", args.auto_material_dither,
         "--background-motion-threshold", args.background_motion_threshold,
         "--background-penalty-multiplier", args.background_penalty_multiplier,
+        "--clean-cell-error", args.clean_cell_error,
+        "--native-colour-snap-error", args.native_colour_snap_error,
         "--max-cell-age", args.max_cell_age,
         "--cell-age-bonus", args.cell_age_bonus,
         "--max-hybrid-bytes", 0 if args.fill_space else args.max_hybrid_bytes,
@@ -590,6 +604,8 @@ def main() -> None:
         "auto_plate_encoder": args.auto_plate_encoder,
         "auto_material_dither": args.auto_material_dither,
         "background_motion_threshold": args.background_motion_threshold,
+        "clean_cell_error": args.clean_cell_error,
+        "native_colour_snap_error": args.native_colour_snap_error,
         "max_cell_age": args.max_cell_age,
         "clip_delta_bytes": args.clip_delta_bytes,
         "fill_space": args.fill_space,

@@ -14,7 +14,7 @@
 typedef struct {
     float brightness, contrast, saturation, gamma;
     float attr_penalty, pixel_penalty, stable_multiplier;
-    float flat_ordered_variance, flat_solid_variance;
+    float flat_ordered_variance, flat_solid_variance, clean_cell_error, native_colour_snap_error;
     float flat_solid_background_distance;
     int flat_solid_max_y;
     int flat_ordered_attribute;
@@ -72,7 +72,7 @@ static float srgb_to_linear(uint8_t channel) {
 }
 
 static Options parse_options(int argc, char **argv) {
-    Options o = {0.0f, 1.0f, 1.0f, 1.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, INFINITY, 192, -1, -1.0f, 1,
+    Options o = {0.0f, 1.0f, 1.0f, 1.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, INFINITY, 192, -1, -1.0f, 1,
                  NULL, NULL, NULL, NULL, NULL, NULL};
     if (argc < 5 || strcmp(argv[1], "sierra") != 0) {
         die("usage: svdenc sierra INPUT.rgb OUTPUT.pix OUTPUT.atr [options]");
@@ -92,6 +92,8 @@ static Options parse_options(int argc, char **argv) {
         else if (!strcmp(name, "--stable-penalty-multiplier")) o.stable_multiplier = parse_float(name, value);
         else if (!strcmp(name, "--flat-ordered-variance")) o.flat_ordered_variance = parse_float(name, value);
         else if (!strcmp(name, "--flat-solid-variance")) o.flat_solid_variance = parse_float(name, value);
+        else if (!strcmp(name, "--clean-cell-error")) o.clean_cell_error = parse_float(name, value);
+        else if (!strcmp(name, "--native-colour-snap-error")) o.native_colour_snap_error = parse_float(name, value);
         else if (!strcmp(name, "--flat-solid-background-distance")) o.flat_solid_background_distance = parse_float(name, value);
         else if (!strcmp(name, "--flat-solid-max-y")) {
             char *end = NULL; long parsed = strtol(value, &end, 10);
@@ -113,7 +115,7 @@ static Options parse_options(int argc, char **argv) {
         die("--previous-pix and --previous-atr must be supplied together");
     if (o.contrast <= 0 || o.saturation < 0 || o.gamma <= 0 ||
         o.attr_penalty < 0 || o.pixel_penalty < 0 || o.stable_multiplier < 1 ||
-        o.flat_ordered_variance < 0 || o.flat_solid_variance < 0 || o.flat_solid_background_distance < 0 ||
+        o.flat_ordered_variance < 0 || o.flat_solid_variance < 0 || o.clean_cell_error < 0 || o.native_colour_snap_error < 0 || o.flat_solid_background_distance < 0 ||
         o.flat_ordered_mix < -1 || o.flat_ordered_mix > 1)
         die("invalid adjustment or temporal parameter");
     return o;
@@ -221,8 +223,9 @@ int main(int argc, char **argv) {
     float *cell_papers = malloc((size_t)CELLS * 3 * sizeof(float));
     float *cell_inks = malloc((size_t)CELLS * 3 * sizeof(float));
     float *flat_mix = calloc(CELLS, sizeof(float)); uint8_t *flat_cells = calloc(CELLS, 1);
+    uint8_t *clean_cells = calloc(CELLS, 1);
     uint8_t background_attrs[HEIGHT];
-    if (!rgb || !bitmap || !attrs || !source || !work || !cell_papers || !cell_inks || !flat_mix || !flat_cells) die("out of memory");
+    if (!rgb || !bitmap || !attrs || !source || !work || !cell_papers || !cell_inks || !flat_mix || !flat_cells || !clean_cells) die("out of memory");
     read_exact(o.input, rgb, RGB_BYTES);
     if (o.previous_pix) {
         previous_bitmap = malloc(CELLS); previous_attrs = malloc(CELLS);
@@ -250,26 +253,44 @@ int main(int argc, char **argv) {
     }
 
     for (int y = 0; y < HEIGHT; ++y) for (int xb = 0; xb < 32; ++xb) {
-        int logical = y * 32 + xb, best_attr = 0; float best_error = INFINITY;
+        int logical = y * 32 + xb, best_attr = 0, best_endpoint_attr = 0;
+        float best_error = INFINITY, best_endpoint_error = INFINITY;
         for (int bright_index = 0; bright_index < 2; ++bright_index) {
             int base = bright_index ? 8 : 0;
             for (int paper = 0; paper < 8; ++paper) for (int ink = 0; ink < 8; ++ink) {
                 int attr = (bright_index ? 0x40 : 0) | (paper << 3) | ink;
-                float axis[3], denominator = 0, error = 0;
+                float axis[3], denominator = 0, error = 0, endpoint_error = 0;
                 for (int k = 0; k < 3; ++k) { axis[k] = palette[base | ink][k] - palette[base | paper][k]; denominator += axis[k] * axis[k]; }
                 for (int px = 0; px < 8; ++px) {
                     const float *pixel = &source[(y * WIDTH + xb * 8 + px) * 3]; float numerator = 0;
                     for (int k = 0; k < 3; ++k) numerator += (pixel[k] - palette[base | paper][k]) * axis[k];
                     float projection = denominator > 1e-12f ? numerator / denominator : 0;
                     if (projection < 0) projection = 0; else if (projection > 1) projection = 1;
-                    for (int k = 0; k < 3; ++k) { float d = pixel[k] - (palette[base | paper][k] + projection * axis[k]); error += d * d; }
+                    float paper_error = 0, ink_error = 0;
+                    for (int k = 0; k < 3; ++k) {
+                        float d = pixel[k] - (palette[base | paper][k] + projection * axis[k]); error += d * d;
+                        float dp = pixel[k] - palette[base | paper][k];
+                        float di = pixel[k] - palette[base | ink][k];
+                        paper_error += dp * dp; ink_error += di * di;
+                    }
+                    endpoint_error += paper_error < ink_error ? paper_error : ink_error;
                 }
                 if (previous_attrs) {
                     float multiplier = stable && stable[logical] ? o.stable_multiplier : 1.0f;
-                    if (attr != (previous_attrs[screen_offset(y, xb)] & 0x7f)) error += o.attr_penalty * multiplier;
+                    if (attr != (previous_attrs[screen_offset(y, xb)] & 0x7f)) {
+                        error += o.attr_penalty * multiplier;
+                        endpoint_error += o.attr_penalty * multiplier;
+                    }
                 }
                 if (error < best_error) { best_error = error; best_attr = attr; }
+                if (endpoint_error < best_endpoint_error) {
+                    best_endpoint_error = endpoint_error; best_endpoint_attr = attr;
+                }
             }
+        }
+        if (o.clean_cell_error > 0 && best_endpoint_error / 8.0f <= o.clean_cell_error) {
+            best_attr = best_endpoint_attr;
+            clean_cells[logical] = 1;
         }
         attrs[screen_offset(y, xb)] = (uint8_t)best_attr;
         int bright = (best_attr & 0x40) ? 8 : 0;
@@ -336,12 +357,25 @@ int main(int argc, char **argv) {
         for (int x = start; x != end; x += direction) {
             int xb = x >> 3, logical = y * 32 + xb, p = y * WIDTH + x;
             float ink_error = 0, paper_error = 0, value[3];
+            int clean = clean_cells[logical] && !flat_cells[logical];
+            int clean_pixel = 0;
+            if (o.native_colour_snap_error > 0 && !flat_cells[logical]) {
+                float source_ink_error = 0, source_paper_error = 0;
+                for (int k = 0; k < 3; ++k) {
+                    float di = source[p * 3 + k] - cell_inks[logical * 3 + k];
+                    float dp = source[p * 3 + k] - cell_papers[logical * 3 + k];
+                    source_ink_error += di * di; source_paper_error += dp * dp;
+                }
+                clean_pixel = (source_ink_error < source_paper_error
+                    ? source_ink_error : source_paper_error) <= o.native_colour_snap_error;
+            }
             for (int k = 0; k < 3; ++k) {
-                value[k] = work[p * 3 + k]; if (value[k] < 0) value[k] = 0; else if (value[k] > 1) value[k] = 1;
+                value[k] = (clean || clean_pixel) ? source[p * 3 + k] : work[p * 3 + k];
+                if (value[k] < 0) value[k] = 0; else if (value[k] > 1) value[k] = 1;
                 float di = value[k] - cell_inks[logical * 3 + k], dp = value[k] - cell_papers[logical * 3 + k];
                 ink_error += di * di; paper_error += dp * dp;
             }
-            if (previous_bitmap) {
+            if (previous_bitmap && !clean && !clean_pixel) {
                 float multiplier = stable && stable[logical] ? o.stable_multiplier : 1.0f;
                 int old_ink = previous_bitmap[screen_offset(y, xb)] & (0x80 >> (x & 7));
                 if (old_ink) paper_error += o.pixel_penalty * multiplier; else ink_error += o.pixel_penalty * multiplier;
@@ -352,7 +386,7 @@ int main(int argc, char **argv) {
             if (use_ink) bitmap[screen_offset(y, xb)] |= (uint8_t)(0x80 >> (x & 7));
             for (int k = 0; k < 3; ++k) {
                 float chosen = use_ink ? cell_inks[logical * 3 + k] : cell_papers[logical * 3 + k];
-                float error = flat_cells[logical] ? 0.0f : value[k] - chosen; int nx = x + direction, back = x - direction;
+                float error = (flat_cells[logical] || clean || clean_pixel) ? 0.0f : value[k] - chosen; int nx = x + direction, back = x - direction;
                 if (nx >= 0 && nx < WIDTH) work[(y * WIDTH + nx) * 3 + k] += error * 0.5f;
                 if (y + 1 < HEIGHT) {
                     if (back >= 0 && back < WIDTH) work[((y + 1) * WIDTH + back) * 3 + k] += error * 0.25f;
@@ -363,6 +397,6 @@ int main(int argc, char **argv) {
     }
     write_exact(o.output_pix, bitmap, CELLS); write_exact(o.output_atr, attrs, CELLS);
     free(rgb); free(bitmap); free(attrs); free(previous_bitmap); free(previous_attrs); free(stable);
-    free(source); free(work); free(cell_papers); free(cell_inks); free(flat_mix); free(flat_cells);
+    free(source); free(work); free(cell_papers); free(cell_inks); free(flat_mix); free(flat_cells); free(clean_cells);
     return 0;
 }

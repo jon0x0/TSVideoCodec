@@ -98,6 +98,22 @@ Its representation and sensitivity are controlled by `--auto-plate-encoder`,
 `--auto-material-dither`, and `--background-motion-threshold`; stable-cell
 temporal protection is tuned with `--background-penalty-multiplier`.
 
+The native Sierra encoder can suppress false texture with
+`--clean-cell-error E`. Alongside the continuous ink-to-paper fit used for
+normal error diffusion, it measures the error of assigning each pixel directly
+to either endpoint of every legal ECM colour pair. If the best endpoint error
+is no greater than `E`, that pair is selected and the cell absorbs incoming
+diffusion error instead of propagating it. This lets real gray and gray/magenta
+pairs represent flat grids directly, while cells above the threshold retain
+ordinary Sierra Lite diffusion. Zero disables the feature.
+
+Native-colour snapping is deliberately separate. With
+`--native-colour-snap-error E`, individual pixels within otherwise complex
+cells bypass diffusion only when their squared linear-RGB distance to the
+selected ink or paper endpoint is at most `E`. Intermediate colours continue
+through Sierra Lite. This cleans native-colour object interiors without
+turning the encoder into a general nearest-colour quantizer.
+
 The encoded reconstructionâ€”not the original source frameâ€”is always used as the
 next predictor. This prevents encoder/decoder drift when rate control defers an
 update. A cyclic warm-up can converge the predictor for seamless loops.

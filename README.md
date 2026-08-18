@@ -158,6 +158,8 @@ python tsvideocodec.py video\amigaboing.gif build\amigaboing_best `
   --auto-plate-encoder sierra-hybrid `
   --auto-material-dither shell-aware `
   --background-motion-threshold 100 `
+  --clean-cell-error 0.04 `
+  --native-colour-snap-error 0.005 `
   --audio2ay ..\tssoundfx\boingf.dat `
   --audio2ay ..\tssoundfx\boingw.dat `
   --audio2ay-play 8:1 `
@@ -173,6 +175,20 @@ zero-based playback positions: 22 frames provide positions 0-41. The original
 address event 40. If capacity requires reducing this example to 21 stored
 frames, change the last event to `39:0`; reducing to 20 requires `37:0`. The CLI
 reports the valid playback range rather than silently moving an event.
+
+`--clean-cell-error 0.04` suppresses false texture in the flat gray grid while
+leaving the intermediate gray ball shadow above the threshold, where Sierra
+Lite retains its shading and the magenta grid detail beneath it.
+For cells whose source pixels are already represented closely by two real ECM
+palette colours, it selects that endpoint pair directly and prevents Sierra
+error from leaking into the next cell. Lower values retain more diffusion;
+zero disables the mode. This is independent of `--auto`, so it remains active
+in the example's `--no-auto` profile. (`--auto-plate-encoder` and
+`--auto-material-dither` only take effect when automatic encoding is enabled.)
+`--native-colour-snap-error 0.005` independently removes diffusion dots from
+pixels already very close to the selected native red or white. Pixels farther
+from a native endpoint continue through Sierra Lite, preserving its useful
+approximation of intermediate source colours. Use zero to disable snapping.
 
 #### Creating audio2ay sound data
 

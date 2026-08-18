@@ -26,6 +26,21 @@ def recording_run(calls):
     return run
 
 
+def test_fifo_capacity_uses_raw_keyframe_when_packbits_exceeds_one_bank():
+    cli = load_cli()
+    # Compressible enough for normal auto-PackBits selection, but too large for
+    # the cartridge FIFO keyframe loader's single-bank compressed representation.
+    plane = bytes(0x800) + bytes((index & 1 for index in range(0x1000)))
+    frame = cli.ECMFrame(plane, plane)
+    packed = (len(cli.encode_packbits(frame.bitmap)) +
+              len(cli.encode_packbits(frame.attributes)))
+
+    assert 0x2000 < packed + 256 < 0x3000
+    assert cli.stored_key_bytes(frame, "auto") == packed
+    assert cli.stored_key_bytes(frame, "auto", cartridge_fifo=True) == 0x3000
+    assert cli.stored_key_bytes(frame, "packbits", cartridge_fifo=True) == 0x3000
+
+
 def test_one_command_builds_both_outputs(monkeypatch, tmp_path):
     cli = load_cli()
     source = tmp_path / "input.gif"
@@ -192,3 +207,40 @@ def test_fill_space_accepts_bounce(monkeypatch, tmp_path):
     assert "--bounce" in cartridge_args
     pause_index = cartridge_args.index("--loop-pause-frames")
     assert cartridge_args[pause_index + 1] == 0
+
+
+def test_audio2ay_assets_and_bounce_timeline_events_are_forwarded(monkeypatch, tmp_path):
+    cli = load_cli()
+    source = tmp_path / "input.gif"
+    source.write_bytes(b"GIF89a")
+    sounds = []
+    for name in ("boingf.dat", "boingw.dat"):
+        path = tmp_path / name
+        path.write_bytes(bytes((1, 1, 1, 0, 10, 0xF0)))
+        sounds.append(path)
+    calls = []
+
+    def fake_run(script, *args):
+        calls.append((script, args))
+        if script == "src/encoder/encode_sequence.py":
+            sequence = Path(args[1]); sequence.mkdir(parents=True, exist_ok=True)
+            for index in range(20):
+                prefix = sequence / f"frame_{index:05d}"
+                prefix.with_suffix(".pix").write_bytes(bytes(0x1800))
+                prefix.with_suffix(".atr").write_bytes(bytes(0x1800))
+
+    monkeypatch.setattr(cli, "run", fake_run)
+    monkeypatch.setattr(sys, "argv", [
+        "tsvideocodec.py", str(source), str(tmp_path / "output"), "--bounce",
+        "--max-frames", "20", "--audio2ay", str(sounds[0]),
+        "--audio2ay", str(sounds[1]), "--audio2ay-play", "30:1",
+    ])
+
+    cli.main()
+
+    cartridge_args = next(args for script, args in calls
+                          if script == "src/cartridge/build_cartridge.py")
+    assert cartridge_args.count("--audio2ay") == 2
+    assert cartridge_args[cartridge_args.index("--audio2ay-play") + 1] == "30:1"
+    manifest = json.loads((tmp_path / "output" / "build.json").read_text())
+    assert manifest["audio2ay_events"] == {"30": 1}

@@ -28,6 +28,7 @@ START:          LD      (ORIGINAL_SP),SP
                 OUT     (PORT_CTRL),A
                 LD      HL,0
                 LD      (SCHED_ACC),HL
+                CALL    AUDIO_INIT
                 CALL    RESET_SEQUENCE
 WAIT_RELEASE:   CALL    KEY_PRESSED
                 JR      NZ,WAIT_RELEASE
@@ -92,8 +93,12 @@ COPY_PACK_KEY:  LD      E,(HL)
                 LD      BC,$1800
                 CALL    DECODE_PACKBITS
 
-FRAME_READY:    EI
+FRAME_READY:    CALL    AUDIO_TRIGGER_FRAME
+                EI
 HOLD:           HALT
+                DI
+                CALL    AUDIO_TICK
+                EI
                 CALL    KEY_PRESSED
                 JP      NZ,EXIT_PLAYER
                 LD      A,(SYS_FRAMES)
@@ -116,12 +121,16 @@ RESET_SEQUENCE: LD      HL,FRAME_TABLE_PTRS
                 LD      (TABLE_PTR),HL
                 LD      A,FRAME_COUNT
                 LD      (FRAMES_LEFT),A
+                XOR     A
+                LD      (PLAYBACK_FRAME),A
                 RET
 
 RESET_LOOP:     LD      HL,LOOP_TABLE_PTRS
                 LD      (TABLE_PTR),HL
                 LD      A,FRAME_COUNT
                 LD      (FRAMES_LEFT),A
+                XOR     A
+                LD      (PLAYBACK_FRAME),A
                 RET
 
 NEXT_INTERVAL:  LD      HL,(SCHED_ACC)
@@ -139,6 +148,137 @@ INTERVAL_DONE:  ADD     HL,DE
                 LD      A,B
                 RET
 
+AUDIO_TRIGGER_FRAME:
+                LD      A,(PLAYBACK_FRAME)
+                LD      E,A
+                LD      D,0
+                LD      HL,AUDIO_EVENT_TABLE
+                ADD     HL,DE
+                LD      C,(HL)
+                INC     A
+                CP      FRAME_COUNT
+                JR      C,TAP_AUDIO_FRAME_STORED
+                XOR     A
+TAP_AUDIO_FRAME_STORED:
+                LD      (PLAYBACK_FRAME),A
+                LD      A,C
+                OR      A
+                RET     Z
+                DEC     A
+                LD      E,A
+                LD      D,0
+                LD      H,D
+                LD      L,E
+                ADD     HL,HL
+                LD      DE,AUDIO_SOUND_TABLE
+                ADD     HL,DE
+                LD      E,(HL)
+                INC     HL
+                LD      D,(HL)
+                LD      A,(DE)
+                INC     DE
+                LD      (AUDIO_CHANNELS),A
+                LD      A,(DE)
+                INC     DE
+                LD      (AUDIO_PERIOD),A
+                LD      A,(DE)
+                INC     DE
+                LD      L,A
+                LD      A,(DE)
+                INC     DE
+                LD      H,A
+                LD      (AUDIO_BLOCKS),HL
+                LD      (AUDIO_PTR),DE
+                LD      A,1
+                LD      (AUDIO_DELAY),A
+                LD      (AUDIO_ACTIVE),A
+                RET
+
+AUDIO_TICK:     PUSH    AF
+                PUSH    BC
+                PUSH    DE
+                PUSH    HL
+                LD      A,(AUDIO_ACTIVE)
+                OR      A
+                JR      Z,TAP_AUDIO_TICK_DONE
+                LD      A,(AUDIO_DELAY)
+                DEC     A
+                LD      (AUDIO_DELAY),A
+                JR      NZ,TAP_AUDIO_TICK_DONE
+                LD      HL,(AUDIO_BLOCKS)
+                LD      A,H
+                OR      L
+                JR      Z,TAP_AUDIO_EXPIRED
+                LD      HL,(AUDIO_PTR)
+                LD      A,(AUDIO_CHANNELS)
+                LD      B,A
+TAP_AUDIO_CHANNEL_LOOP:
+                PUSH    BC
+                LD      E,B
+                LD      A,B
+                DEC     A
+                ADD     A,A
+                OUT     ($F5),A
+                LD      D,A
+                LD      A,(HL)
+                INC     HL
+                OUT     ($F6),A
+                LD      A,D
+                INC     A
+                OUT     ($F5),A
+                LD      D,A
+                LD      A,(HL)
+                AND     $0F
+                OUT     ($F6),A
+                LD      A,E
+                ADD     A,7
+                OUT     ($F5),A
+                LD      A,(HL)
+                RRCA
+                RRCA
+                RRCA
+                RRCA
+                AND     $0F
+                OUT     ($F6),A
+                INC     HL
+                POP     BC
+                DJNZ    TAP_AUDIO_CHANNEL_LOOP
+                LD      (AUDIO_PTR),HL
+                LD      HL,(AUDIO_BLOCKS)
+                DEC     HL
+                LD      (AUDIO_BLOCKS),HL
+                LD      A,(AUDIO_PERIOD)
+                LD      (AUDIO_DELAY),A
+                JR      TAP_AUDIO_TICK_DONE
+TAP_AUDIO_EXPIRED:
+                XOR     A
+                LD      (AUDIO_ACTIVE),A
+                CALL    AUDIO_SILENCE
+TAP_AUDIO_TICK_DONE:
+                POP     HL
+                POP     DE
+                POP     BC
+                POP     AF
+                RET
+
+AUDIO_INIT:     XOR     A
+                LD      (AUDIO_ACTIVE),A
+                LD      A,7
+                OUT     ($F5),A
+                LD      A,56
+                OUT     ($F6),A
+AUDIO_SILENCE:  XOR     A
+                LD      B,3
+                LD      C,8
+TAP_AUDIO_SILENCE_LOOP:
+                LD      A,C
+                OUT     ($F5),A
+                XOR     A
+                OUT     ($F6),A
+                INC     C
+                DJNZ    TAP_AUDIO_SILENCE_LOOP
+                RET
+
 ; Select all keyboard half-rows. NZ means at least one key is held.
 KEY_PRESSED:    XOR     A
                 IN      A,($FE)
@@ -148,6 +288,7 @@ KEY_PRESSED:    XOR     A
 
 ; Restore normal display, BASIC's stack, and return from RANDOMIZE USR.
 EXIT_PLAYER:    DI
+                CALL    AUDIO_SILENCE
                 XOR     A
                 OUT     (PORT_CTRL),A
                 OUT     (PORT_HSR),A
@@ -339,8 +480,16 @@ ORIGINAL_SP:    DW      0
 PACK_COUNT:     DB      0
 PACK_VALUE:     DB      0
 PAIRS_LEFT:     DW      0
+PLAYBACK_FRAME: DB      0
+AUDIO_ACTIVE:   DB      0
+AUDIO_PTR:      DW      0
+AUDIO_BLOCKS:   DW      0
+AUDIO_CHANNELS: DB      0
+AUDIO_PERIOD:   DB      0
+AUDIO_DELAY:    DB      0
 
 BITMAP_ROWS:
                 INCLUDE "bitmap_rows.inc"
 
                 INCLUDE "tap_frames.inc"
+                INCLUDE "audio2ay_config.inc"

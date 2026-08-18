@@ -12,6 +12,7 @@ ROOT = Path(__file__).parents[1]
 sys.path.insert(0, str(ROOT / "encoder"))
 sys.path.insert(0, str(ROOT))
 from toolchain import assemble_pasmo
+from audio2ay import event_bytes, load_sounds, parse_events
 from svd_ecm import ECMFrame
 from keyframe_codec import decode_packbits, encode_packbits
 from fifo_hybrid import pack_fifo_hybrid
@@ -64,6 +65,9 @@ def main() -> None:
                         help="pack hybrid deltas contiguously across cartridge banks")
     parser.add_argument("--keyframe-codec", choices=("raw", "packbits", "auto"), default="auto",
                         help="initial frame storage (auto uses compression only when worthwhile)")
+    parser.add_argument("--audio2ay", action="append", type=Path, default=[], metavar="FILE")
+    parser.add_argument("--audio2ay-play", action="append", default=[],
+                        metavar="FRAME:SOUND_INDEX")
     args = parser.parse_args()
     if args.stop_at_end and args.seamless_loop:
         raise SystemExit("--stop-at-end and --seamless-loop are mutually exclusive")
@@ -84,6 +88,12 @@ def main() -> None:
     if not 0 <= args.decode_tick_compensation <= 255:
         raise SystemExit("--decode-tick-compensation must fit in one byte")
     args.output.mkdir(parents=True, exist_ok=True)
+    try:
+        audio_sounds = load_sounds(args.audio2ay)
+    except ValueError as error:
+        raise SystemExit(str(error)) from None
+    if len(audio_sounds) > 255:
+        raise SystemExit("at most 255 audio2ay sounds can be packed")
     prefixes = sorted(args.sequence.glob("frame_*.pix"))
     if args.frame_limit > 0:
         prefixes = prefixes[:args.frame_limit]
@@ -156,6 +166,27 @@ def main() -> None:
         slots = [[slot * CHUNK_SIZE, (slot + 1) * CHUNK_SIZE]
                  for slot in range(len(STREAM_CHUNKS))]
         key_stored_size = compressed_key_size
+    audio_offsets = []
+    fifo_video_start = key_stored_size
+    if args.fifo_packing:
+        cursor = key_stored_size
+        for index, sound in enumerate(audio_sounds):
+            if len(sound.data) > CHUNK_SIZE:
+                raise SystemExit(f"audio2ay sound {index} exceeds one cartridge bank")
+            remaining = CHUNK_SIZE - (cursor % CHUNK_SIZE)
+            if len(sound.data) > remaining:
+                cursor += remaining
+            if cursor + len(sound.data) > capacity:
+                raise SystemExit(f"audio2ay sound {index} exceeds cartridge FIFO capacity")
+            payload[cursor:cursor + len(sound.data)] = sound.data
+            audio_offsets.append(cursor)
+            cursor += len(sound.data)
+        fifo_video_start = cursor
+    else:
+        for index, sound in enumerate(audio_sounds):
+            if len(sound.data) > CHUNK_SIZE:
+                raise SystemExit(f"audio2ay sound {index} exceeds one cartridge bank")
+            pack_items.append((f"audio_{index}", sound.data))
     frame_stats.append({"frame": 0, "frame_type": f"KEY_{keyframe_codec.upper()}",
                         "update_bytes": key_stored_size})
     blobs = []
@@ -199,7 +230,7 @@ def main() -> None:
 
     placements = {}
     if args.fifo_packing:
-        cursor = key_stored_size
+        cursor = fifo_video_start
         for packed_number, (index, blob) in enumerate(blobs, 1):
             label = "loop" if index == len(frames) else f"frame {index}"
             progress(f"Packing {label} ({packed_number}/{len(blobs)}) into cartridge FIFO")
@@ -226,6 +257,10 @@ def main() -> None:
             slots[slot_index][0] += len(blob)
             placements[index] = (offset, blob)
         progress_done(f"Packed {len(sorted_items)} cartridge records")
+
+    if not args.fifo_packing:
+        audio_offsets = [placements[f"audio_{index}"][0]
+                         for index in range(len(audio_sounds))]
 
     if keyframe_codec == "packbits" and not args.fifo_packing:
         key_records = []
@@ -258,15 +293,20 @@ def main() -> None:
                                 "update_bytes": len(blob)})
         else:
             loop_record = ((offset // CHUNK_SIZE, source[1]) if args.fifo_packing else source[:2])
-    used_payload = (key_stored_size + sum(len(placements[index][1]) for index, _ in blobs)
+    used_payload = (cursor
                     if args.fifo_packing else
-                    key_stored_size + sum(len(blob) for _, blob in blobs))
+                    key_stored_size + sum(len(blob) for _, blob in blobs) +
+                    sum(len(sound.data) for sound in audio_sounds))
 
     if args.bounce and len(frames) < 2:
         raise SystemExit("--bounce requires at least two frames")
     playback_count = 2 * len(frames) - 2 if args.bounce else len(frames)
     if playback_count > 255:
         raise SystemExit("bounce playback exceeds the 255-entry cartridge frame table")
+    try:
+        audio_events = parse_events(args.audio2ay_play, len(audio_sounds), playback_count)
+    except ValueError as error:
+        raise SystemExit(str(error)) from None
     lines = [f"FRAME_COUNT     EQU     {playback_count}", "FRAME_TABLE_PTRS:"]
     initial_indices = (bounce_table_indices(len(frames), True) if args.bounce
                        else list(range(len(frames))))
@@ -309,6 +349,19 @@ def main() -> None:
     (args.output / "bitmap_rows.inc").write_text(
         "\n".join(f"                DW      ${0x4000 + screen_offset(y, 0):04X}"
                   for y in range(192)) + "\n", encoding="ascii")
+    audio_lines = ["AUDIO_EVENT_TABLE:",
+                   "                DB      " + ",".join(
+                       str(value) for value in event_bytes(audio_events, playback_count)),
+                   "AUDIO_SOUND_TABLE:"]
+    if audio_sounds:
+        for offset in audio_offsets:
+            mask, source, _, _ = segments(offset, 0, 1)[0]
+            audio_lines.append(f"                DB      ${mask:02X}\n"
+                               f"                DW      ${source:04X}")
+    else:
+        audio_lines.append("                DB      0\n                DW      0")
+    (args.output / "audio2ay_config.inc").write_text(
+        "\n".join(audio_lines) + "\n", encoding="ascii")
     stream_metadata = json.loads(args.stream.with_suffix(".json").read_text())
     (args.output / "player_config.inc").write_text(
         f"TICK_NUMERATOR EQU {60 * stream_metadata['fps_den']}\n"
@@ -389,6 +442,11 @@ def main() -> None:
                               if args.fifo_packing else 0),
         "loop_pause_frames": args.loop_pause_frames,
         "interrupt_hz": 60,
+        "audio2ay": [{"index": index, "source": str(sound.path),
+                       "bytes": len(sound.data), "channels": sound.channels,
+                       "tick_interval": sound.tick_interval, "blocks": sound.blocks}
+                      for index, sound in enumerate(audio_sounds)],
+        "audio2ay_events": {str(frame): index for frame, index in audio_events.items()},
         "tick_numerator": 60 * stream_metadata["fps_den"],
         "tick_denominator": stream_metadata["fps_num"],
         "update_payload_bytes": used_payload,

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import shutil
 import sys
 from pathlib import Path
 
@@ -12,6 +13,7 @@ ROOT = Path(__file__).parents[1]
 sys.path.insert(0, str(ROOT / "encoder"))
 sys.path.insert(0, str(ROOT))
 from toolchain import assemble_pasmo
+from audio2ay import event_bytes, load_sounds, parse_events
 from svd_ecm import ECMFrame, screen_offset
 from keyframe_codec import decode_packbits, encode_packbits
 from svd_stream import encode_delta, encode_paired_xor_cells
@@ -59,8 +61,15 @@ def main() -> None:
                         default="auto")
     parser.add_argument("--bounce", action="store_true",
                         help="reuse paired-XOR deltas for forward/reverse playback")
+    parser.add_argument("--audio2ay", action="append", type=Path, default=[], metavar="FILE")
+    parser.add_argument("--audio2ay-play", action="append", default=[],
+                        metavar="FRAME:SOUND_INDEX")
     args = parser.parse_args()
     args.output.mkdir(parents=True, exist_ok=True)
+    try:
+        audio_sounds = load_sounds(args.audio2ay)
+    except ValueError as error:
+        raise SystemExit(str(error)) from None
     frames = []
     for pix in sorted(args.sequence.glob("frame_*.pix")):
         frames.append(ECMFrame(pix.read_bytes(), pix.with_suffix(".atr").read_bytes()))
@@ -93,7 +102,17 @@ def main() -> None:
     if not args.bounce:
         loop_blob, _ = encode_delta(frames[-1], frames[0])
         (args.output / "loop.raster").write_bytes(loop_blob)
-    raster_payload_bytes = key_path.stat().st_size + sum(path.stat().st_size for path in blobs) + len(loop_blob)
+    playback_count = 2 * len(frames) - 2 if args.bounce else len(frames)
+    if playback_count > 255:
+        raise SystemExit("bounce playback exceeds the 255-entry TAP frame table")
+    try:
+        audio_events = parse_events(args.audio2ay_play, len(audio_sounds), playback_count)
+    except ValueError as error:
+        raise SystemExit(str(error)) from None
+    audio_payload_bytes = (sum(len(sound.data) for sound in audio_sounds) +
+                           (playback_count + 2 * len(audio_sounds) if audio_sounds else 0))
+    raster_payload_bytes = (key_path.stat().st_size + sum(path.stat().st_size for path in blobs) +
+                            len(loop_blob) + audio_payload_bytes)
     safe_image_bytes = WORKSPACE_BACKUP - LOAD_ADDRESS
     if raster_payload_bytes + 1024 > safe_image_bytes:
         raise SystemExit(
@@ -101,9 +120,6 @@ def main() -> None:
             f"safe contiguous image budget is {safe_image_bytes} bytes"
         )
 
-    playback_count = 2 * len(frames) - 2 if args.bounce else len(frames)
-    if playback_count > 255:
-        raise SystemExit("bounce playback exceeds the 255-entry TAP frame table")
     initial_indices = ([0] + list(range(1, len(frames))) + list(range(len(frames) - 1, 1, -1))
                        if args.bounce else list(range(len(frames))))
     loop_indices = ([1] + list(range(1, len(frames))) + list(range(len(frames) - 1, 1, -1))
@@ -134,6 +150,22 @@ def main() -> None:
     (args.output / "bitmap_rows.inc").write_text(
         "\n".join(f"                DW      ${0x4000 + screen_offset(y, 0):04X}" for y in range(192)) + "\n",
         encoding="ascii")
+    audio_lines = ["AUDIO_EVENT_TABLE:",
+                   "                DB      " + ",".join(
+                       str(value) for value in event_bytes(audio_events, playback_count)),
+                   "AUDIO_SOUND_TABLE:"]
+    if audio_sounds:
+        audio_lines.append("                DW      " + ",".join(
+            f"AUDIO_SOUND_{index}" for index in range(len(audio_sounds))))
+        for index, sound in enumerate(audio_sounds):
+            local = args.output / f"audio2ay_{index:03d}.dat"
+            shutil.copyfile(sound.path, local)
+            audio_lines += [f"AUDIO_SOUND_{index}:",
+                            f'                INCBIN  "{local.name}"']
+    else:
+        audio_lines.append("                DW      0")
+    (args.output / "audio2ay_config.inc").write_text(
+        "\n".join(audio_lines) + "\n", encoding="ascii")
 
     binary = args.output / "svd_video_tap.bin"
     symbols = args.output / "svd_video_tap.symbols"
@@ -167,6 +199,11 @@ def main() -> None:
                 "keyframe_codec": keyframe_codec,
                 "keyframe_raw_bytes": len(raw_key),
                 "keyframe_stored_bytes": key_path.stat().st_size,
+                "audio2ay": [{"index": index, "source": str(sound.path),
+                               "bytes": len(sound.data), "channels": sound.channels,
+                               "tick_interval": sound.tick_interval, "blocks": sound.blocks}
+                              for index, sound in enumerate(audio_sounds)],
+                "audio2ay_events": {str(frame): index for frame, index in audio_events.items()},
                 "image_end": end, "stack_top": STACK_TOP, "headroom_bytes": STACK_TOP - end,
                 "tap_bytes": len(tap), "keyboard_exit": "any key; restores normal video and returns to BASIC"}
     (args.output / "tap_manifest.json").write_text(json.dumps(metadata, indent=2) + "\n")

@@ -190,6 +190,39 @@ an offset, plane flags, and bitmap and/or attribute XOR masks. Applying the
 record to either endpoint reconstructs the other endpoint while retaining the
 anti-tearing benefit of updating both visible planes together.
 
+## audio2ay sound-effect scheduling
+
+The optional sound layer consumes the compact `.dat` format produced by
+audio2ay: channel count, 60 Hz tick interval, little-endian block count, then
+one two-byte tone/volume value per channel per block. Build-time validation
+checks the header and exact payload length. Effects are one-shot; reaching the
+block count clears AY amplitude registers 8-10. Triggering another effect
+replaces the current one. This first implementation intentionally provides one
+active sound-effect voice; streamed music and sound mixing remain future work.
+
+The build generates a byte event table for the complete logical playback
+cycle. Zero means no event and values 1-255 select a zero-based sound index plus
+one. Consequently a bounce clip with N stored frames exposes event positions
+0 through `2*N-3`, including its reverse leg, without duplicating image or
+sound data. Both the initial and subsequent loop tables reset the event cursor
+to position zero.
+
+Audio is serviced after every 60 Hz display `HALT`, including extra hold ticks
+when video runs below 60 fps, staged-update waits, loop pauses, and a held final
+frame. The short service routine writes the next block only when the sound's
+tick divider expires. It runs without a custom interrupt handler, matching the
+cooperative architecture: display decoding owns the main loop and calls audio
+at known safe points. A video decoder that overruns a hardware tick can still
+delay an audio update, so decoder timing remains part of output qualification.
+
+Cartridge sound assets are placed in the seven-bank media payload before FIFO
+video records and kept within individual 8 KB banks. Each table entry stores an
+HSR mask and address; the tick routine selects that bank briefly, reads one
+block, then restores the code-only mapping. TAP assets are included directly
+in the contiguous RAM image. Capacity probing accounts for sound bytes, event
+tables, bank-end padding, and the cartridge FIFO keyframe fallback, allowing
+`--fill-space` to reserve audio space before rate-controlling video.
+
 ## Storage and players
 
 The 64 KB cartridge reserves one 8 KB bank for code and tables and uses seven

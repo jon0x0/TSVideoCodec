@@ -123,6 +123,54 @@ based. With `--transport paired`, bounce mode automatically selects paired-XOR
 records so bitmap and colour remain coupled without using the non-reversible
 replacement records used by ordinary forward paired playback.
 
+### audio2ay sound effects
+
+TAP and cartridge players can optionally pack audio2ay `.dat` effects and
+trigger them at exact positions in the logical playback cycle. Add each sound
+with repeatable `--audio2ay FILE`; its zero-based index is its order on the
+command line. Schedule it with repeatable `--audio2ay-play FRAME:INDEX`.
+Frames are also zero-based. In bounce mode, the timeline contains `2*N-2`
+positions, so with 20 stored frames an event at frame 30 occurs on the reverse
+leg. A trigger replaces any effect still playing; when an effect reaches its
+declared block count, the player silences all three AY amplitude registers.
+
+The player services audio at 60 Hz from its own display wait loop. An effect's
+header byte 1 controls the number of 60 Hz ticks between AY writes, independent
+of the chosen video FPS. Sound data is included in capacity probing and in the
+resulting TAP or cartridge; `--fill-space` therefore leaves room for it.
+
+For the amigaboing example, after renaming `testf.dat`/`testw.dat` to
+`boingf.dat`/`boingw.dat`, this builds the requested bouncing cartridge using
+the established visual settings:
+
+```powershell
+python tsvideocodec.py video\amigaboing.gif build\amigaboing_best `
+  --format cartridge `
+  --fill-space `
+  --transport hybrid `
+  --fifo-packing `
+  --keyframe-codec packbits `
+  --max-frames 22 `
+  --encoder native `
+  --no-auto `
+  --bounce `
+  --auto-plate-encoder sierra-hybrid `
+  --auto-material-dither shell-aware `
+  --background-motion-threshold 100 `
+  --audio2ay D:\T7_Recover\Jon\Personal\Timex\audio2ay-master\bin\boingf.dat `
+  --audio2ay D:\T7_Recover\Jon\Personal\Timex\audio2ay-master\bin\boingw.dat `
+  --audio2ay-play 10:1 --audio2ay-play 20:0 --audio2ay-play 40:0 `
+  --pasmo D:\T7_Recover\Jon\Personal\Timex\TSVideoCodec\build\wsl-pasmo.cmd
+```
+
+Here sound 1 (`boingw`) starts at frame 10, and sound 0 (`boingf`) starts at
+frames 20 and 40. This uses 22 stored frames because bounce exposes `2*N-2`
+zero-based playback positions: 22 frames provide positions 0-41. The original
+`--max-frames 20` setting provides only positions 0-37 and therefore cannot
+address event 40. If capacity requires reducing this example to 21 stored
+frames, change the last event to `39:0`; reducing to 20 requires `37:0`. The CLI
+reports the valid playback range rather than silently moving an event.
+
 The initial TAP or cartridge frame uses `--keyframe-codec auto` by default. It selects
 PackBits when that meaningfully reduces the 12 KB bitmap-plus-attribute frame;
 use `raw` or `packbits` to force either representation. During startup the

@@ -12,6 +12,8 @@ from fractions import Fraction
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent / "src" / "encoder"))
+sys.path.insert(0, str(Path(__file__).parent / "src"))
+from audio2ay import load_sounds, parse_events
 from fifo_hybrid import pack_fifo_hybrid
 from keyframe_codec import encode_packbits
 from svd_ecm import ECMFrame
@@ -43,13 +45,32 @@ def probe_source_fps(source: Path) -> float:
     return float(rate)
 
 
-def stored_key_bytes(frame: ECMFrame, codec: str) -> int:
+def stored_key_bytes(frame: ECMFrame, codec: str, *, cartridge_fifo: bool = False) -> int:
     packed = len(encode_packbits(frame.bitmap)) + len(encode_packbits(frame.attributes))
     if codec == "raw":
+        return 0x3000
+    # The cartridge FIFO keyframe loader currently requires both compressed
+    # planes to fit in its first 8 KB bank.  build_cartridge.py therefore
+    # falls back to raw storage even when packbits was explicitly requested.
+    # Capacity probing must make the same decision or --fill-space can consume
+    # the 3-4 KB that the real builder needs for that fallback.
+    if cartridge_fifo and packed > 0x2000:
         return 0x3000
     if codec == "packbits":
         return packed
     return packed if packed + 256 < 0x3000 else 0x3000
+
+
+def append_bank_local(cursor: int, sizes: list[int]) -> int:
+    """Reserve records that may not cross an 8 KB cartridge payload bank."""
+    for size in sizes:
+        if size > 0x2000:
+            return 1 << 30
+        remaining = 0x2000 - (cursor % 0x2000)
+        if size > remaining:
+            cursor += remaining
+        cursor += size
+    return cursor
 
 
 def output_blobs(frames: list[ECMFrame], *, tap: bool, transport: str,
@@ -92,22 +113,29 @@ def output_blobs(frames: list[ECMFrame], *, tap: bool, transport: str,
 
 def output_capacity(frames: list[ECMFrame], *, target: str, key_codec: str,
                     transport: str, fifo_packing: bool, update_slices: int,
-                    slice_order: str, bounce: bool) -> dict[str, int | bool]:
-    key_bytes = stored_key_bytes(frames[0], key_codec)
+                    slice_order: str, bounce: bool,
+                    audio_sizes: list[int] | None = None) -> dict[str, int | bool]:
+    audio_sizes = audio_sizes or []
     tap = target == "tap"
+    key_bytes = stored_key_bytes(
+        frames[0], key_codec,
+        cartridge_fifo=not tap and transport == "hybrid" and fifo_packing)
     blobs = output_blobs(frames, tap=tap, transport=transport,
                          update_slices=update_slices, slice_order=slice_order,
                          bounce=bounce)
     capacity = (0xE000 - 0x7800 - 1024) if tap else 7 * 0x2000
     if not tap and transport == "hybrid" and fifo_packing:
-        cursor = key_bytes
+        cursor = append_bank_local(key_bytes, audio_sizes)
         for blob in blobs:
             cursor += len(pack_fifo_hybrid(blob, cursor))
         used = cursor
         largest = 0
     else:
-        used = key_bytes + sum(map(len, blobs))
-        largest = 0 if tap else max(map(len, blobs), default=0)
+        event_overhead = ((2 * len(audio_sizes) +
+                           (2 * len(frames) - 2 if bounce else len(frames)))
+                          if tap and audio_sizes else 0)
+        used = key_bytes + sum(map(len, blobs)) + sum(audio_sizes) + event_overhead
+        largest = 0 if tap else max([*map(len, blobs), *audio_sizes], default=0)
     fits = used <= capacity and (tap or largest <= 0x2000)
     return {"fits": fits, "used": used, "capacity": capacity,
             "key_bytes": key_bytes, "largest": largest}
@@ -197,6 +225,12 @@ def main() -> None:
     parser.add_argument("--loop-pause-frames", type=int, default=0)
     parser.add_argument("--pasmo", default=None,
                         help="Pasmo executable; defaults to PASMO or PATH")
+    parser.add_argument("--audio2ay", "--audio2ay-sound", action="append", type=Path,
+                        default=[], metavar="FILE",
+                        help="add an audio2ay .dat sound (repeatable; indices are zero-based)")
+    parser.add_argument("--audio2ay-play", action="append", default=[],
+                        metavar="FRAME:SOUND_INDEX",
+                        help="trigger a loaded sound on a zero-based playback frame")
     args = parser.parse_args()
 
     if args.max_cell_age is None:
@@ -234,6 +268,14 @@ def main() -> None:
         parser.error("--bounce requires looping playback")
     if args.bounce and args.loop_transition != "delta":
         parser.error("--bounce uses reversible deltas and requires --loop-transition delta")
+    if args.audio2ay_play and not args.audio2ay:
+        parser.error("--audio2ay-play requires at least one --audio2ay sound")
+    try:
+        audio_sounds = load_sounds(args.audio2ay)
+    except ValueError as error:
+        parser.error(str(error))
+    if len(audio_sounds) > 255:
+        parser.error("at most 255 audio2ay sounds can be packed")
 
     source = args.input.resolve()
     if not source.is_file():
@@ -296,6 +338,16 @@ def main() -> None:
     else:
         run("src/encoder/encode_sequence.py", *encoder_args)
 
+    encoded_paths = sorted(sequence.glob("frame_*.pix"))
+    playback_frame_count = (2 * len(encoded_paths) - 2 if args.bounce
+                            else len(encoded_paths))
+    try:
+        audio_events = parse_events(
+            args.audio2ay_play, len(audio_sounds), playback_frame_count)
+    except ValueError as error:
+        parser.error(str(error))
+    audio_sizes = [len(sound.data) for sound in audio_sounds]
+
     calculated_clip_budget = 0
     capacity_fit_applied = False
     if args.fill_space:
@@ -309,12 +361,6 @@ def main() -> None:
                             for path in candidate_paths]
         if len(candidate_frames) < 2:
             parser.error("--fill-space requires at least two selected frames")
-        packed_key = (len(encode_packbits(candidate_frames[0].bitmap)) +
-                      len(encode_packbits(candidate_frames[0].attributes)))
-        key_bytes = (0x3000 if args.keyframe_codec == "raw" else packed_key
-                     if args.keyframe_codec == "packbits" else
-                     packed_key if packed_key + 256 < 0x3000 else 0x3000)
-
         if args.bounce and 2 * len(candidate_frames) - 2 > 255:
             parser.error("bounce playback exceeds the 255-entry cartridge frame table")
 
@@ -356,23 +402,30 @@ def main() -> None:
             reports = []
             okay = True
             if args.format in ("tap", "both"):
+                key_bytes = stored_key_bytes(items[0], args.keyframe_codec)
                 blobs = transport_blobs(items, True)
-                used = key_bytes + sum(map(len, blobs))
+                playback_count = 2 * len(items) - 2 if args.bounce else len(items)
+                audio_overhead = (sum(audio_sizes) + 2 * len(audio_sizes) + playback_count
+                                  if audio_sizes else 0)
+                used = key_bytes + sum(map(len, blobs)) + audio_overhead
                 capacity = 0xE000 - 0x7800 - 1024
                 reports.append(f"TAP {used}/{capacity}")
                 okay &= used <= capacity
             if args.format in ("cartridge", "both"):
+                key_bytes = stored_key_bytes(
+                    items[0], args.keyframe_codec,
+                    cartridge_fifo=args.transport == "hybrid" and args.fifo_packing)
                 blobs = transport_blobs(items, False)
                 capacity = 7 * 0x2000
                 if args.transport == "hybrid" and args.fifo_packing:
-                    cursor = key_bytes
+                    cursor = append_bank_local(key_bytes, audio_sizes)
                     for blob in blobs:
                         cursor += len(pack_fifo_hybrid(blob, cursor))
                     used = cursor
                     largest = 0
                 else:
-                    used = key_bytes + sum(map(len, blobs))
-                    largest = max(map(len, blobs), default=0)
+                    used = key_bytes + sum(map(len, blobs)) + sum(audio_sizes)
+                    largest = max([*map(len, blobs), *audio_sizes], default=0)
                     okay &= largest <= 0x2000
                 reports.append(f"cartridge {used}/{capacity}, largest={largest}")
                 okay &= used <= capacity
@@ -434,7 +487,7 @@ def main() -> None:
             items, target=target, key_codec=args.keyframe_codec,
             transport=args.transport, fifo_packing=args.fifo_packing,
             update_slices=args.update_slices, slice_order=args.slice_order,
-            bounce=args.bounce)) for target in targets]
+            bounce=args.bounce, audio_sizes=audio_sizes)) for target in targets]
 
     metrics = metrics_for(final_frames)
     for target, values in metrics:
@@ -493,6 +546,10 @@ def main() -> None:
             cartridge_args.append("--fifo-packing")
         if args.pasmo:
             cartridge_args += ["--pasmo", args.pasmo]
+        for sound in audio_sounds:
+            cartridge_args += ["--audio2ay", sound.path]
+        for frame, sound_index in sorted(audio_events.items()):
+            cartridge_args += ["--audio2ay-play", f"{frame}:{sound_index}"]
         run("src/cartridge/build_cartridge.py", *cartridge_args)
         artifacts["dck"] = str(output / "cartridge" / "svd_video_64k.dck")
         artifacts["cartridge_bin"] = str(output / "cartridge" / "svd_video_64k.bin")
@@ -507,6 +564,10 @@ def main() -> None:
             tap_args.append("--bounce")
         if args.pasmo:
             tap_args += ["--pasmo", args.pasmo]
+        for sound in audio_sounds:
+            tap_args += ["--audio2ay", sound.path]
+        for frame, sound_index in sorted(audio_events.items()):
+            tap_args += ["--audio2ay-play", f"{frame}:{sound_index}"]
         run("src/player/build_video_tap.py", *tap_args)
         artifacts["tap"] = str(output / "tap" / "svd_video.tap")
 
@@ -540,6 +601,8 @@ def main() -> None:
         "transport": args.transport if args.format != "tap" else "tap-raster",
         "fifo_packing": args.fifo_packing,
         "loop": args.loop, "loop_transition": args.loop_transition,
+        "audio2ay": [str(sound.path) for sound in audio_sounds],
+        "audio2ay_events": {str(frame): index for frame, index in audio_events.items()},
         "artifacts": artifacts,
     }
     (output / "build.json").write_text(

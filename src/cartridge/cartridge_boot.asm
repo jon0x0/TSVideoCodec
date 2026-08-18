@@ -22,6 +22,14 @@ PACK_VALUE      EQU     $780D
 FIFO_SLOT       EQU     $780E
 SLICES_LEFT     EQU     $780F
 SLICE_MASK      EQU     $7810
+PLAYBACK_FRAME  EQU     $7811
+AUDIO_ACTIVE    EQU     $7812
+AUDIO_MASK      EQU     $7813
+AUDIO_PTR       EQU     $7814
+AUDIO_BLOCKS    EQU     $7816
+AUDIO_CHANNELS  EQU     $7818
+AUDIO_PERIOD    EQU     $7819
+AUDIO_DELAY     EQU     $781A
 
 START:          DI
                 POP     HL                  ; move AROS return off screen RAM
@@ -29,6 +37,7 @@ START:          DI
                 PUSH    HL
                 LD      HL,0
                 LD      (SCHED_ACC),HL
+                CALL    AUDIO_INIT
                 CALL    PRELOAD_SHADOW
                 LD      HL,$6000           ; hide keyframe construction
                 LD      DE,$6001
@@ -64,8 +73,12 @@ INTERVAL_READY:
                 POP     IX
                 CALL    COPY_FRAME
 
-FRAME_READY:    EI
+FRAME_READY:    CALL    AUDIO_TRIGGER_FRAME
+                EI
 HOLD:           HALT
+                DI
+                CALL    AUDIO_TICK
+                EI
                 LD      A,(SYS_FRAMES)
                 LD      B,A
                 LD      A,(NEXT_TICK)
@@ -85,12 +98,18 @@ PAUSE_LAST:     LD      A,STOP_AT_END
                 OR      A
                 JR      Z,PAUSE_RESTART
 STOP_FOREVER:   HALT
+                DI
+                CALL    AUDIO_TICK
+                EI
                 JR      STOP_FOREVER
 PAUSE_RESTART:  LD      B,LOOP_PAUSE_FRAMES
                 LD      A,B
                 OR      A
                 JR      Z,LOOP_RESTART
 PAUSE_LOOP:     HALT
+                DI
+                CALL    AUDIO_TICK
+                EI
                 DJNZ    PAUSE_LOOP
 LOOP_RESTART:
                 DI
@@ -103,12 +122,16 @@ RESET_SEQUENCE: LD      HL,FRAME_TABLE_PTRS
                 LD      (FRAMES_LEFT),A
                 LD      A,1
                 LD      (FIRST_DECODE),A
+                XOR     A
+                LD      (PLAYBACK_FRAME),A
                 RET
 
 RESET_LOOP:     LD      HL,LOOP_TABLE_PTRS
                 LD      (TABLE_PTR),HL
                 LD      A,FRAME_COUNT
                 LD      (FRAMES_LEFT),A
+                XOR     A
+                LD      (PLAYBACK_FRAME),A
                 RET
 
 ; Fractional 60 Hz scheduler. Keeps its remainder across loop boundaries.
@@ -125,6 +148,158 @@ INTERVAL_LOOP:  LD      DE,TICK_DENOMINATOR
 INTERVAL_DONE:  ADD     HL,DE
                 LD      (SCHED_ACC),HL
                 LD      A,B
+                RET
+
+; Frame events use the complete playback timeline, not source-frame indices.
+; This makes reverse-leg events addressable in bounce mode. A zero event means
+; no trigger; other values are a one-based index into AUDIO_SOUND_TABLE.
+AUDIO_TRIGGER_FRAME:
+                LD      A,(PLAYBACK_FRAME)
+                LD      E,A
+                LD      D,0
+                LD      HL,AUDIO_EVENT_TABLE
+                ADD     HL,DE
+                LD      C,(HL)
+                INC     A
+                CP      FRAME_COUNT
+                JR      C,AUDIO_FRAME_STORED
+                XOR     A
+AUDIO_FRAME_STORED:
+                LD      (PLAYBACK_FRAME),A
+                LD      A,C
+                OR      A
+                RET     Z
+                DEC     A
+                LD      E,A
+                LD      D,0
+                LD      H,D
+                LD      L,E
+                ADD     HL,HL
+                ADD     HL,DE
+                LD      DE,AUDIO_SOUND_TABLE
+                ADD     HL,DE
+                LD      A,(HL)
+                INC     HL
+                LD      (AUDIO_MASK),A
+                LD      BC,$00F4
+                OUT     (C),A
+                LD      E,(HL)
+                INC     HL
+                LD      D,(HL)
+                LD      A,(DE)
+                INC     DE
+                LD      (AUDIO_CHANNELS),A
+                LD      A,(DE)
+                INC     DE
+                LD      (AUDIO_PERIOD),A
+                LD      A,(DE)
+                INC     DE
+                LD      L,A
+                LD      A,(DE)
+                INC     DE
+                LD      H,A
+                LD      (AUDIO_BLOCKS),HL
+                LD      (AUDIO_PTR),DE
+                LD      A,1
+                LD      (AUDIO_DELAY),A
+                LD      (AUDIO_ACTIVE),A
+                LD      A,$10
+                LD      BC,$00F4
+                OUT     (C),A
+                RET
+
+; Service one 60 Hz audio tick. audio2ay records hold one fine/coarse+volume
+; pair per active channel. A new trigger replaces any currently playing sound.
+AUDIO_TICK:     PUSH    AF
+                PUSH    BC
+                PUSH    DE
+                PUSH    HL
+                LD      A,(AUDIO_ACTIVE)
+                OR      A
+                JR      Z,AUDIO_TICK_DONE
+                LD      A,(AUDIO_DELAY)
+                DEC     A
+                LD      (AUDIO_DELAY),A
+                JR      NZ,AUDIO_TICK_DONE
+                LD      HL,(AUDIO_BLOCKS)
+                LD      A,H
+                OR      L
+                JR      Z,AUDIO_EXPIRED
+                LD      A,(AUDIO_MASK)
+                LD      BC,$00F4
+                OUT     (C),A
+                LD      HL,(AUDIO_PTR)
+                LD      A,(AUDIO_CHANNELS)
+                LD      B,A
+AUDIO_CHANNEL_LOOP:
+                PUSH    BC
+                LD      E,B
+                LD      A,B
+                DEC     A
+                ADD     A,A
+                OUT     ($F5),A
+                LD      D,A
+                LD      A,(HL)
+                INC     HL
+                OUT     ($F6),A
+                LD      A,D
+                INC     A
+                OUT     ($F5),A
+                LD      D,A
+                LD      A,(HL)
+                AND     $0F
+                OUT     ($F6),A
+                LD      A,E
+                ADD     A,7
+                OUT     ($F5),A
+                LD      A,(HL)
+                RRCA
+                RRCA
+                RRCA
+                RRCA
+                AND     $0F
+                OUT     ($F6),A
+                INC     HL
+                POP     BC
+                DJNZ    AUDIO_CHANNEL_LOOP
+                LD      (AUDIO_PTR),HL
+                LD      HL,(AUDIO_BLOCKS)
+                DEC     HL
+                LD      (AUDIO_BLOCKS),HL
+                LD      A,(AUDIO_PERIOD)
+                LD      (AUDIO_DELAY),A
+                JR      AUDIO_RESTORE_BANK
+AUDIO_EXPIRED:  XOR     A
+                LD      (AUDIO_ACTIVE),A
+                CALL    AUDIO_SILENCE
+                JR      AUDIO_TICK_DONE
+AUDIO_RESTORE_BANK:
+                LD      A,$10
+                LD      BC,$00F4
+                OUT     (C),A
+AUDIO_TICK_DONE:
+                POP     HL
+                POP     DE
+                POP     BC
+                POP     AF
+                RET
+
+AUDIO_INIT:     XOR     A
+                LD      (AUDIO_ACTIVE),A
+                LD      A,7
+                OUT     ($F5),A
+                LD      A,56
+                OUT     ($F6),A
+AUDIO_SILENCE:  XOR     A
+                LD      B,3
+                LD      C,8
+AUDIO_SILENCE_LOOP:
+                LD      A,C
+                OUT     ($F5),A
+                XOR     A
+                OUT     ($F6),A
+                INC     C
+                DJNZ    AUDIO_SILENCE_LOOP
                 RET
 
 ; Cartridge chunks 2/3 occupy the display addresses. Preserve their payload
@@ -443,6 +618,7 @@ SLICE_WAIT:
                 EI
                 HALT
                 DI
+                CALL    AUDIO_TICK
                 POP     DE
                 LD      A,(SLICE_MASK)       ; restore packed source bank
                 LD      BC,$00F4
@@ -704,4 +880,5 @@ BITMAP_ROWS:
                 INCLUDE "bitmap_rows.inc"
 
                 INCLUDE "frame_table.inc"
+                INCLUDE "audio2ay_config.inc"
                 DEFS    $A000-$,$FF

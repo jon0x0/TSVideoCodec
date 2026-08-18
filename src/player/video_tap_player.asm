@@ -97,7 +97,7 @@ FRAME_READY:    CALL    AUDIO_TRIGGER_FRAME
                 EI
 HOLD:           HALT
                 DI
-                CALL    AUDIO_TICK
+                CALL    AUDIO_SERVICE
                 EI
                 CALL    KEY_PRESSED
                 JP      NZ,EXIT_PLAYER
@@ -194,6 +194,38 @@ TAP_AUDIO_FRAME_STORED:
                 LD      (AUDIO_ACTIVE),A
                 RET
 
+AUDIO_SERVICE:  CALL    CHECK_SOUND_KEY
+                JP      AUDIO_TICK
+
+CHECK_SOUND_KEY:
+                PUSH    AF
+                PUSH    BC
+                PUSH    HL
+                LD      BC,$FDFE
+                IN      A,(C)
+                BIT     1,A
+                JR      NZ,TAP_SOUND_KEY_RELEASED
+                LD      A,(AUDIO_S_LATCH)
+                OR      A
+                JR      NZ,TAP_SOUND_KEY_DONE
+                LD      A,1
+                LD      (AUDIO_S_LATCH),A
+                LD      A,(AUDIO_ENABLED_STATE)
+                XOR     1
+                LD      (AUDIO_ENABLED_STATE),A
+                OR      A
+                JR      NZ,TAP_SOUND_KEY_DONE
+                CALL    AUDIO_SILENCE
+                JR      TAP_SOUND_KEY_DONE
+TAP_SOUND_KEY_RELEASED:
+                XOR     A
+                LD      (AUDIO_S_LATCH),A
+TAP_SOUND_KEY_DONE:
+                POP     HL
+                POP     BC
+                POP     AF
+                RET
+
 AUDIO_TICK:     PUSH    AF
                 PUSH    BC
                 PUSH    DE
@@ -214,6 +246,9 @@ AUDIO_TICK:     PUSH    AF
                 LD      B,A
 TAP_AUDIO_CHANNEL_LOOP:
                 PUSH    BC
+                LD      A,(AUDIO_ENABLED_STATE)
+                OR      A
+                JR      Z,TAP_AUDIO_CHANNEL_MUTED
                 LD      E,B
                 LD      A,B
                 DEC     A
@@ -241,6 +276,11 @@ TAP_AUDIO_CHANNEL_LOOP:
                 AND     $0F
                 OUT     ($F6),A
                 INC     HL
+                JR      TAP_AUDIO_CHANNEL_DONE
+TAP_AUDIO_CHANNEL_MUTED:
+                INC     HL
+                INC     HL
+TAP_AUDIO_CHANNEL_DONE:
                 POP     BC
                 DJNZ    TAP_AUDIO_CHANNEL_LOOP
                 LD      (AUDIO_PTR),HL
@@ -263,6 +303,9 @@ TAP_AUDIO_TICK_DONE:
 
 AUDIO_INIT:     XOR     A
                 LD      (AUDIO_ACTIVE),A
+                LD      (AUDIO_S_LATCH),A
+                INC     A
+                LD      (AUDIO_ENABLED_STATE),A
                 LD      A,7
                 OUT     ($F5),A
                 LD      A,56
@@ -279,11 +322,21 @@ TAP_AUDIO_SILENCE_LOOP:
                 DJNZ    TAP_AUDIO_SILENCE_LOOP
                 RET
 
-; Select all keyboard half-rows. NZ means at least one key is held.
+; NZ means a non-S key is held. S alone is reserved for sound toggling.
 KEY_PRESSED:    XOR     A
                 IN      A,($FE)
                 CPL
                 AND     $1F
+                LD      C,A
+                AND     $1D                ; any column other than S's column
+                RET     NZ
+                LD      A,C
+                AND     2
+                RET     Z
+                LD      BC,$02FE           ; all rows except A/S/D/F/G
+                IN      A,(C)
+                CPL
+                AND     2
                 RET
 
 ; Restore normal display, BASIC's stack, and return from RANDOMIZE USR.
@@ -487,6 +540,8 @@ AUDIO_BLOCKS:   DW      0
 AUDIO_CHANNELS: DB      0
 AUDIO_PERIOD:   DB      0
 AUDIO_DELAY:    DB      0
+AUDIO_ENABLED_STATE: DB 1
+AUDIO_S_LATCH:  DB      0
 
 BITMAP_ROWS:
                 INCLUDE "bitmap_rows.inc"

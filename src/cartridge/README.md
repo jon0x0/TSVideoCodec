@@ -6,6 +6,10 @@ generated ECM keyframe followed by separately terminated bitmap/attribute hybrid
 streams from all seven non-code DOCK chunks at 12 fps deadlines, pauses for one
 second after the final frame, and repeats.
 
+Optional audio2ay effects are serviced from the same 60 Hz display loop.
+Sound starts enabled; pressing and releasing `S` toggles mute without stopping
+the animation or resetting the sound-event timeline.
+
 Cartridge chunks 2 and 3 are copied at boot into underlying HOME RAM chunks 6
 and 7; the $4000/$6000 regions can then return to the live ECM display while
 their cartridge storage remains usable. Chunk 4 contains the executing player

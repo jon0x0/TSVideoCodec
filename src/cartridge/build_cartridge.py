@@ -447,6 +447,7 @@ def main() -> None:
                        "tick_interval": sound.tick_interval, "blocks": sound.blocks}
                       for index, sound in enumerate(audio_sounds)],
         "audio2ay_events": {str(frame): index for frame, index in audio_events.items()},
+        "sound_toggle_key": "S" if audio_sounds else None,
         "tick_numerator": 60 * stream_metadata["fps_den"],
         "tick_denominator": stream_metadata["fps_num"],
         "update_payload_bytes": used_payload,

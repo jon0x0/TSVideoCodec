@@ -603,6 +603,7 @@ def main() -> None:
         "loop": args.loop, "loop_transition": args.loop_transition,
         "audio2ay": [str(sound.path) for sound in audio_sounds],
         "audio2ay_events": {str(frame): index for frame, index in audio_events.items()},
+        "sound_toggle_key": "S" if audio_sounds else None,
         "artifacts": artifacts,
     }
     (output / "build.json").write_text(

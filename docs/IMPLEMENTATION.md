@@ -215,6 +215,14 @@ cooperative architecture: display decoding owns the main loop and calls audio
 at known safe points. A video decoder that overruns a hardware tick can still
 delay an audio update, so decoder timing remains part of output qualification.
 
+Both players scan the TS2068 A/S/D/F/G keyboard half-row at those same service
+points. A press edge on `S` toggles an enabled flag, with a release latch to
+prevent 60 Hz key repeat. Sound starts enabled. Muting zeros AY amplitudes
+immediately but continues consuming scheduled blocks and accepting new frame
+events, so unmuting rejoins the current animation/audio timeline. The TAP
+player's general key-exit scan excludes `S` alone while continuing to recognize
+every other key, including keys in the same keyboard column.
+
 Cartridge sound assets are placed in the seven-bank media payload before FIFO
 video records and kept within individual 8 KB banks. Each table entry stores an
 HSR mask and address; the tick routine selects that bank briefly, reads one

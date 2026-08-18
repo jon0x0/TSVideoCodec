@@ -48,9 +48,10 @@ Measure KEY and DELTA execution paths using Fuse frame/T-state counters:
 ## Contiguous TAP player
 
 `build_video_tap.py` packages a sequence as a self-loading contiguous-RAM TAP.
-The player preserves the BASIC workspace beneath the ECM attribute plane; any
-key restores normal video mode, restores that workspace and the caller's stack,
-and returns from `RANDOMIZE USR`.
+The player preserves the BASIC workspace beneath the ECM attribute plane.
+Pressing `S` toggles optional audio2ay sound; any other key restores normal
+video mode, restores that workspace and the caller's stack, and returns from
+`RANDOMIZE USR`.
 
 Pass `--bounce` to play `0..N-1..1` repeatedly. The TAP stores only N source
 frames and N-1 paired-XOR deltas. The same delta record is applied in each

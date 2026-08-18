@@ -30,6 +30,8 @@ AUDIO_BLOCKS    EQU     $7816
 AUDIO_CHANNELS  EQU     $7818
 AUDIO_PERIOD    EQU     $7819
 AUDIO_DELAY     EQU     $781A
+AUDIO_ENABLED_STATE EQU $781B
+AUDIO_S_LATCH   EQU     $781C
 
 START:          DI
                 POP     HL                  ; move AROS return off screen RAM
@@ -77,7 +79,7 @@ FRAME_READY:    CALL    AUDIO_TRIGGER_FRAME
                 EI
 HOLD:           HALT
                 DI
-                CALL    AUDIO_TICK
+                CALL    AUDIO_SERVICE
                 EI
                 LD      A,(SYS_FRAMES)
                 LD      B,A
@@ -99,7 +101,7 @@ PAUSE_LAST:     LD      A,STOP_AT_END
                 JR      Z,PAUSE_RESTART
 STOP_FOREVER:   HALT
                 DI
-                CALL    AUDIO_TICK
+                CALL    AUDIO_SERVICE
                 EI
                 JR      STOP_FOREVER
 PAUSE_RESTART:  LD      B,LOOP_PAUSE_FRAMES
@@ -108,7 +110,7 @@ PAUSE_RESTART:  LD      B,LOOP_PAUSE_FRAMES
                 JR      Z,LOOP_RESTART
 PAUSE_LOOP:     HALT
                 DI
-                CALL    AUDIO_TICK
+                CALL    AUDIO_SERVICE
                 EI
                 DJNZ    PAUSE_LOOP
 LOOP_RESTART:
@@ -210,6 +212,39 @@ AUDIO_FRAME_STORED:
 
 ; Service one 60 Hz audio tick. audio2ay records hold one fine/coarse+volume
 ; pair per active channel. A new trigger replaces any currently playing sound.
+AUDIO_SERVICE:  CALL    CHECK_SOUND_KEY
+                JP      AUDIO_TICK
+
+; Debounced S key on the A/S/D/F/G keyboard half-row toggles mute. Playback
+; state continues advancing while muted, so unmuting rejoins the timeline.
+CHECK_SOUND_KEY:
+                PUSH    AF
+                PUSH    BC
+                PUSH    HL
+                LD      BC,$FDFE
+                IN      A,(C)
+                BIT     1,A
+                JR      NZ,SOUND_KEY_RELEASED
+                LD      A,(AUDIO_S_LATCH)
+                OR      A
+                JR      NZ,SOUND_KEY_DONE
+                LD      A,1
+                LD      (AUDIO_S_LATCH),A
+                LD      A,(AUDIO_ENABLED_STATE)
+                XOR     1
+                LD      (AUDIO_ENABLED_STATE),A
+                OR      A
+                JR      NZ,SOUND_KEY_DONE
+                CALL    AUDIO_SILENCE
+                JR      SOUND_KEY_DONE
+SOUND_KEY_RELEASED:
+                XOR     A
+                LD      (AUDIO_S_LATCH),A
+SOUND_KEY_DONE: POP     HL
+                POP     BC
+                POP     AF
+                RET
+
 AUDIO_TICK:     PUSH    AF
                 PUSH    BC
                 PUSH    DE
@@ -233,6 +268,9 @@ AUDIO_TICK:     PUSH    AF
                 LD      B,A
 AUDIO_CHANNEL_LOOP:
                 PUSH    BC
+                LD      A,(AUDIO_ENABLED_STATE)
+                OR      A
+                JR      Z,AUDIO_CHANNEL_MUTED
                 LD      E,B
                 LD      A,B
                 DEC     A
@@ -260,6 +298,11 @@ AUDIO_CHANNEL_LOOP:
                 AND     $0F
                 OUT     ($F6),A
                 INC     HL
+                JR      AUDIO_CHANNEL_DONE
+AUDIO_CHANNEL_MUTED:
+                INC     HL
+                INC     HL
+AUDIO_CHANNEL_DONE:
                 POP     BC
                 DJNZ    AUDIO_CHANNEL_LOOP
                 LD      (AUDIO_PTR),HL
@@ -286,6 +329,9 @@ AUDIO_TICK_DONE:
 
 AUDIO_INIT:     XOR     A
                 LD      (AUDIO_ACTIVE),A
+                LD      (AUDIO_S_LATCH),A
+                INC     A
+                LD      (AUDIO_ENABLED_STATE),A
                 LD      A,7
                 OUT     ($F5),A
                 LD      A,56
@@ -618,7 +664,7 @@ SLICE_WAIT:
                 EI
                 HALT
                 DI
-                CALL    AUDIO_TICK
+                CALL    AUDIO_SERVICE
                 POP     DE
                 LD      A,(SLICE_MASK)       ; restore packed source bank
                 LD      BC,$00F4

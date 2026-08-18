@@ -244,3 +244,4 @@ def test_audio2ay_assets_and_bounce_timeline_events_are_forwarded(monkeypatch, t
     assert cartridge_args[cartridge_args.index("--audio2ay-play") + 1] == "30:1"
     manifest = json.loads((tmp_path / "output" / "build.json").read_text())
     assert manifest["audio2ay_events"] == {"30": 1}
+    assert manifest["sound_toggle_key"] == "S"

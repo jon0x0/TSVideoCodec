@@ -204,8 +204,10 @@ def main() -> None:
                                "tick_interval": sound.tick_interval, "blocks": sound.blocks}
                               for index, sound in enumerate(audio_sounds)],
                 "audio2ay_events": {str(frame): index for frame, index in audio_events.items()},
+                "sound_toggle_key": "S" if audio_sounds else None,
                 "image_end": end, "stack_top": STACK_TOP, "headroom_bytes": STACK_TOP - end,
-                "tap_bytes": len(tap), "keyboard_exit": "any key; restores normal video and returns to BASIC"}
+                "tap_bytes": len(tap),
+                "keyboard_exit": "any non-S key; S toggles sound"}
     (args.output / "tap_manifest.json").write_text(json.dumps(metadata, indent=2) + "\n")
     print(f"assembled contiguous TAP image: {len(code)} bytes, ${LOAD_ADDRESS:04X}-${end - 1:04X}")
     print(f"RAM headroom below stack: {STACK_TOP - end} bytes")

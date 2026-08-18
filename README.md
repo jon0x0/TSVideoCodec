@@ -138,10 +138,11 @@ The player services audio at 60 Hz from its own display wait loop. An effect's
 header byte 1 controls the number of 60 Hz ticks between AY writes, independent
 of the chosen video FPS. Sound data is included in capacity probing and in the
 resulting TAP or cartridge; `--fill-space` therefore leaves room for it.
+Sound is enabled by default. Press and release `S` to toggle it off or on in
+either player. Muting immediately silences the AY while effect timing continues;
+on a TAP, other keys retain the normal exit-to-BASIC behavior.
 
-For the amigaboing example, after renaming `testf.dat`/`testw.dat` to
-`boingf.dat`/`boingw.dat`, this builds the requested bouncing cartridge using
-the established visual settings:
+The default amigaboing build is:
 
 ```powershell
 python tsvideocodec.py video\amigaboing.gif build\amigaboing_best `
@@ -157,19 +158,36 @@ python tsvideocodec.py video\amigaboing.gif build\amigaboing_best `
   --auto-plate-encoder sierra-hybrid `
   --auto-material-dither shell-aware `
   --background-motion-threshold 100 `
-  --audio2ay D:\T7_Recover\Jon\Personal\Timex\audio2ay-master\bin\boingf.dat `
-  --audio2ay D:\T7_Recover\Jon\Personal\Timex\audio2ay-master\bin\boingw.dat `
-  --audio2ay-play 10:1 --audio2ay-play 20:0 --audio2ay-play 40:0 `
-  --pasmo D:\T7_Recover\Jon\Personal\Timex\TSVideoCodec\build\wsl-pasmo.cmd
+  --audio2ay ..\tssoundfx\boingf.dat `
+  --audio2ay ..\tssoundfx\boingw.dat `
+  --audio2ay-play 8:1 `
+  --audio2ay-play 20:0 `
+  --audio2ay-play 31:1 `
+  --audio2ay-play 40:0
 ```
 
-Here sound 1 (`boingw`) starts at frame 10, and sound 0 (`boingf`) starts at
-frames 20 and 40. This uses 22 stored frames because bounce exposes `2*N-2`
+Here sound 1 (`boingw`) starts at frames 8 and 31, while sound 0 (`boingf`)
+starts at frames 20 and 40. This uses 22 stored frames because bounce exposes `2*N-2`
 zero-based playback positions: 22 frames provide positions 0-41. The original
 `--max-frames 20` setting provides only positions 0-37 and therefore cannot
 address event 40. If capacity requires reducing this example to 21 stored
 frames, change the last event to `39:0`; reducing to 20 requires `37:0`. The CLI
 reports the valid playback range rather than silently moving an event.
+
+#### Creating audio2ay sound data
+
+Download and build [Jari Komppa's audio2ay](https://github.com/jarikomppa/audio2ay).
+Starting with `BoingBallF.wav` and `BoingBallW.wav`, convert the effects with
+the desired AY frequency range:
+
+```powershell
+audio2ay BoingBallF.wav --minhz=47 --maxhz=8237 -o=boingf.dat
+audio2ay BoingBallW.wav --minhz=47 --maxhz=8237 -o=boingw.dat
+```
+
+The general form is `audio2ay INPUT.wav --minhz=47 --maxhz=8237
+-o=OUTPUT.dat`. TSVideoCodec validates the resulting channel count, tick
+interval, block count, and exact data length before packaging it.
 
 The initial TAP or cartridge frame uses `--keyframe-codec auto` by default. It selects
 PackBits when that meaningfully reduces the 12 KB bitmap-plus-attribute frame;

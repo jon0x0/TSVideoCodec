@@ -1,0 +1,21 @@
+python tsvideocodec.py video\amigaboing.gif build\amigaboing_best `
+  --format cartridge `
+  --fill-space `
+  --transport hybrid `
+  --fifo-packing `
+  --keyframe-codec packbits `
+  --max-frames 22 `
+  --encoder native `
+  --no-auto `
+  --bounce `
+  --auto-plate-encoder sierra-hybrid `
+  --auto-material-dither shell-aware `
+  --background-motion-threshold 100 `
+  --clean-cell-error 0.04 `
+  --native-colour-snap-error 0.005 `
+  --audio2ay ..\tssoundfx\boingf.dat `
+  --audio2ay ..\tssoundfx\boingw.dat `
+  --audio2ay-play 8:1 `
+  --audio2ay-play 20:0 `
+  --audio2ay-play 32:1 `
+  --audio2ay-play 40:0

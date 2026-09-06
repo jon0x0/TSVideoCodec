@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Playable TSVideoCodec cartridge demos for the Timex Sinclair 2068, running in TSRun.">
+  <title>TSVideoCodec · Playable demos</title>
+  <link rel="stylesheet" href="style.css">
+  <script src="app.js" defer></script>
+</head>
+<body>
+  <header class="site-header">
+    <a class="brand" href="./">TSVideoCodec <span>/ demos</span></a>
+    <nav aria-label="Main navigation">
+      <a href="https://github.com/jon0x0/TSVideoCodec">Source ↗</a>
+      <a href="https://github.com/josef-jelinek/TSRun">TSRun ↗</a>
+    </nav>
+  </header>
+
+  <main>
+    <section class="intro">
+      <p class="eyebrow">VIDEO ON A 1983 TIMEX</p>
+      <h1>Put the codec in motion.</h1>
+      <p class="lede">These are real 64 KB TS2068 cartridge images, running in your browser through the live <a href="https://josef-jelinek.github.io/TSRun/">TSRun emulator</a>. Pick a demo, start the machine, and watch the SVD-ECM decoder work.</p>
+    </section>
+
+    <section class="player" aria-label="Playable TS2068 demos">
+      <div class="player-bar">
+        <span><i class="led" aria-hidden="true"></i> TIMEX SINCLAIR 2068</span>
+        <span id="status" role="status">Loading emulator…</span>
+      </div>
+      <div class="screen-wrap">
+        <iframe id="emulator" src="emulator/index.html" title="TSVideoCodec cartridge running in TSRun" allow="autoplay; fullscreen" allowfullscreen></iframe>
+        <div id="start-panel">
+          <div>
+            <p class="eyebrow">CARTRIDGE INSERTED</p>
+            <h2>Ready when you are.</h2>
+            <p>Browsers require a click before emulator audio can begin.</p>
+            <button id="start" disabled>Loading…</button>
+            <p id="error" role="alert"></p>
+          </div>
+        </div>
+      </div>
+      <div class="controls">
+        <div class="demo-picker" role="group" aria-label="Choose a cartridge">
+          <button class="demo active" data-demo="boing" aria-pressed="true">Boing Ball</button>
+          <button class="demo" data-demo="juggler" aria-pressed="false">Juggler</button>
+          <button class="demo" data-demo="newton" aria-pressed="false">Newton</button>
+        </div>
+        <div class="machine-controls">
+          <button id="reset">Reset</button>
+          <button id="fullscreen">Full screen</button>
+        </div>
+      </div>
+      <p class="hint">Click the display to focus the emulator. The selected cartridge loads automatically; Reset restarts it from its boot screen.</p>
+    </section>
+
+    <section class="demo-notes">
+      <article>
+        <p class="eyebrow">DEMO 01</p>
+        <h2>Boing Ball</h2>
+        <p>An Amiga-inspired bouncing ball rendered in TS2068 Extended Colour Mode, with frame-scheduled AY sound effects.</p>
+        <a href="assets/BoingDemo.dck" download>Download BoingDemo.dck ↓</a>
+      </article>
+      <article>
+        <p class="eyebrow">DEMO 02</p>
+        <h2>Juggler</h2>
+        <p>A compact cartridge loop demonstrating the codec’s temporal reconstruction and banked playback on moving imagery.</p>
+        <a href="assets/jugglerecm.dck" download>Download jugglerecm.dck ↓</a>
+      </article>
+      <article>
+        <p class="eyebrow">DEMO 03</p>
+        <h2>Newton</h2>
+        <p>A tape-loadable RAM-player demo. The page inserts the TAP and types <code>LOAD ""</code> into the emulated TS2068 automatically.</p>
+        <a href="assets/newton.tap" download>Download newton.tap ↓</a>
+      </article>
+    </section>
+
+    <section class="about">
+      <div>
+        <p class="eyebrow">WHAT IS RUNNING?</p>
+        <h2>Project cartridges. Upstream emulator.</h2>
+      </div>
+      <p>This site hosts the TSVideoCodec adapter and demo media only. Emulator modules, shaders, mixer, and Timex system ROMs load from the original TSRun site at runtime. If the live emulator is unavailable, the DCK and TAP downloads remain usable in Fuse or on compatible hardware.</p>
+    </section>
+  </main>
+
+  <footer>
+    <span>Emulation by <a href="https://josef-jelinek.github.io/TSRun/">TSRun</a>, by Josef Jelinek · <a href="https://github.com/josef-jelinek/TSRun">upstream source</a> · <a href="THIRD-PARTY.md">credits</a></span>
+    <a href="https://github.com/jon0x0/TSVideoCodec">TSVideoCodec on GitHub ↗</a>
+  </footer>
+</body>
+</html>

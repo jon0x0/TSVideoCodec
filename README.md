@@ -11,6 +11,12 @@ deltas, and packages streams for TAP or 64 KB DCK cartridges. `--auto` analyzes
 the complete clip, identifies stable background regions, preserves moving
 foreground detail, and restores exposed backgrounds without manual masks.
 
+**[Play the cartridge demos in your browser →](https://jon0x0.github.io/TSVideoCodec/)**
+
+The gallery automatically loads the curated Boing Ball and Juggler cartridges
+and the Newton TAP demo in [TSRun](https://github.com/josef-jelinek/TSRun). It
+also provides the original DCK and TAP files for Fuse or compatible hardware.
+
 ## Repository layout
 
 - `src/encoder/` — reference Python encoder and stream tools
@@ -20,6 +26,7 @@ foreground detail, and restores exposed backgrounds without manual masks.
 - `tests/` — deterministic codec and round-trip tests
 - `docs/` — format, automatic-analysis, measurements, and implementation notes
 - `demos/` — the only checked-in binary demos, plus their curated build scripts
+- `web/` — the GitHub Pages gallery and live-TSRun adapter
 
 Generated frames, streams, reports, source videos, native executables, and
 assembler objects are deliberately excluded from Git.

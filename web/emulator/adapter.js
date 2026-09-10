@@ -53,11 +53,18 @@ async function boot(){
     machine.homeRom.set(rom0);machine.exRom.set(rom1);
     if(sfx){cpu.setSoundRate(machine,sfx.context.sampleRate);cpu.enableSound(machine,true);}
     const spec=demos[current];
-    const mediaError=spec.type==='tap'?cpu.insertTap(machine,currentBytes):cpu.insertDock(machine,currentBytes);
+    const insertTape=cpu.insertTape||cpu.insertTap;
+    const mediaError=spec.type==='tap'?insertTape(machine,currentBytes):cpu.insertDock(machine,currentBytes);
     if(mediaError)throw new Error(mediaError);
-    cpu.resetMachine(machine);
     tapeLoading=spec.type==='tap';
-    if(tapeLoading&&sfx)autoloadTap();
+    if(!tapeLoading){cpu.resetMachine(machine);return;}
+    if(!sfx){cpu.resetMachine(machine);return;}
+    if(cpu.autoloadTape){
+      if(!cpu.autoloadTape(machine))throw new Error('TSRun could not prepare this tape for automatic loading.');
+      tapeLoading=false;
+    }else{
+      cpu.resetMachine(machine);autoloadTap();
+    }
   }
   async function load(id){
     if(!demos[id])throw new Error(`Unknown demo: ${id}`);
@@ -88,8 +95,9 @@ async function boot(){
     requestAnimationFrame(frame);pads.pollJoysticks(joystick);
     if(!last)last=now;carry+=Math.min(80,now-last);last=now;
     let ran=0;while(carry>=frameMs&&ran<4){step();carry-=frameMs;ran++;}
-    if(machine.tape.playing&&!machine.tape.waiting){
-      while(ran<100&&machine.tape.playing&&!machine.tape.waiting){step(true);ran++;}
+    const tapePlaying=machine.tape.state?machine.tape.state==='playing':machine.tape.playing&&!machine.tape.waiting;
+    if(tapePlaying){
+      while(ran<100&&(machine.tape.state?machine.tape.state==='playing':machine.tape.playing&&!machine.tape.waiting)){step(true);ran++;}
       step();
     }else if(started&&sound.soundIsRunning(sfx)&&!sound.soundQueueReady(sfx)&&ran<4){step();carry=Math.max(carry,0)-frameMs;}
     video.drawScreen(gfx,machine.pixels);

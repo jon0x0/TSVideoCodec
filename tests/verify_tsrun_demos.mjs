@@ -17,9 +17,11 @@ for(const cartridgePath of cartridges){
   const media=fs.readFileSync(cartridgePath);
   const isTape=path.extname(cartridgePath).toLowerCase()==='.tap';
   if(!isTape)assert.equal(media.length,65545,`${cartridgePath}: unexpected DCK size`);
-  const mediaError=isTape?api.insertTap(machine,media):api.insertDock(machine,media);
+  const insertTape=api.insertTape||api.insertTap;
+  const mediaError=isTape?insertTape(machine,media):api.insertDock(machine,media);
   assert.equal(mediaError,null,`${cartridgePath}: media insertion failed`);
-  api.resetMachine(machine);api.setSoundRate(machine,44100);api.enableSound(machine,true);
+  if(!isTape||!api.autoloadTape)api.resetMachine(machine);
+  api.setSoundRate(machine,44100);api.enableSound(machine,true);
   function run(count,turbo=false){
     for(let frame=0;frame<count;frame++){
       api.setVideoOn(machine,!turbo);api.enableSound(machine,!turbo);api.runFrame(machine);api.takeAudio(machine);
@@ -31,13 +33,19 @@ for(const cartridgePath of cartridges){
     keys.fill(31);run(8);
   }
   if(isTape){
-    run(100);
-    press([[6,3]]);                  // J: LOAD keyword
-    press([[7,1],[5,0]]);           // Symbol Shift + P: quote
-    press([[7,1],[5,0]]);           // closing quote
-    press([[6,0]]);                 // Enter
+    if(api.autoloadTape){
+      assert.equal(api.autoloadTape(machine),true,`${cartridgePath}: upstream autoload rejected the tape`);
+    }else{
+      run(100);
+      press([[6,3]]);                // J: LOAD keyword
+      press([[7,1],[5,0]]);         // Symbol Shift + P: quote
+      press([[7,1],[5,0]]);         // closing quote
+      press([[6,0]]);               // Enter
+    }
+    run(1);                         // Let the ROM enter/start the tape loader.
     let turboFrames=0;
-    while(machine.tape.playing&&!machine.tape.waiting&&turboFrames<20000){run(1,true);turboFrames++;}
+    const tapePlaying=()=>machine.tape.state?machine.tape.state==='playing':machine.tape.playing&&!machine.tape.waiting;
+    while(tapePlaying()&&turboFrames<20000){run(1,true);turboFrames++;}
     assert.ok(turboFrames<20000,`${cartridgePath}: tape did not finish loading`);
     run(1);
   }
@@ -54,5 +62,5 @@ for(const cartridgePath of cartridges){
   assert.ok(audioSamples>0,`${cartridgePath}: emulator produced no audio samples`);
   const pixelValues=new Set(machine.pixels).size;
   assert.ok(pixelValues>2,`${cartridgePath}: final display is blank`);
-  console.log(JSON.stringify({media:cartridgePath,type:isTape?'tap':'dck',frames:360,changedFrames:changed,audioSamples,pixelValues,pc:machine.cpu.pc,tapePlaying:machine.tape.playing,tapeWaiting:machine.tape.waiting}));
+  console.log(JSON.stringify({media:cartridgePath,type:isTape?'tap':'dck',frames:360,changedFrames:changed,audioSamples,pixelValues,pc:machine.cpu.pc,tapeState:machine.tape.state??(machine.tape.playing?'playing':machine.tape.waiting?'ready':'done')}));
 }

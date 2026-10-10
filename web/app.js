@@ -5,6 +5,7 @@ const panel=document.getElementById('start-panel');
 const error=document.getElementById('error');
 const names={boing:'Boing Ball',juggler:'Juggler',newton:'Newton'};
 let ready=false;
+const requestedDemo=new URLSearchParams(location.search).get('demo');
 
 function selectDemo(id){
   document.querySelectorAll('[data-demo]').forEach(button=>{
@@ -25,6 +26,7 @@ window.addEventListener('message',event=>{
     start.disabled=false;
     start.textContent='Start demo';
     status.textContent=`${names[event.data.demo]} cartridge loaded`;
+    if(requestedDemo&&names[requestedDemo])selectDemo(requestedDemo);
   }else if(event.data?.type==='tsvideo-loaded'){
     status.textContent=`Running · ${names[event.data.demo]}`;
   }else if(event.data?.type==='tsvideo-loading'){
@@ -54,5 +56,5 @@ document.getElementById('fullscreen').addEventListener('click',()=>{
   request?.catch(()=>{status.textContent='Full screen unavailable in this browser';});
 });
 setTimeout(()=>{
-  if(!ready)error.textContent='The live TSRun emulator is taking longer than expected. Reload, or download a DCK below.';
+  if(!ready)error.textContent='The emulator is taking longer than expected. Reload, or download a DCK or TAP below.';
 },20000);

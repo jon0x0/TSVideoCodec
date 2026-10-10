@@ -17,6 +17,7 @@
 __pycache__/
 .pytest_cache/
 .venv/
+node_modules/
 *.py[cod]
 *.o
 *.obj

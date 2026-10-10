@@ -3,6 +3,7 @@ name: Deploy playable demos
 on:
   push:
     branches: [main]
+  pull_request:
   workflow_dispatch:
 
 permissions:
@@ -25,13 +26,31 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - run: python scripts/build_pages.py
+      - uses: actions/checkout@v4
+        with:
+          repository: josef-jelinek/TSRun
+          ref: 41dbe3e41c692a1806f2cb900c5a0faa1549ae77
+          path: build/tsrun
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: npm install --ignore-scripts --no-audit --no-fund
+      - run: npx playwright install --with-deps chromium
+      - run: python scripts/build_pages.py --tsrun build/tsrun
+      - run: node tests/verify_tsrun_demos.mjs build/pages/emulator/tsrun
+      - run: node tests/verify_pages.mjs
       - uses: actions/configure-pages@v5
+        if: github.event_name != 'pull_request'
         with:
           enablement: true
       - uses: actions/upload-pages-artifact@v3
+        if: github.event_name != 'pull_request'
         with:
           path: build/pages
       - name: Deploy
+        if: github.event_name != 'pull_request'
         id: deployment
         uses: actions/deploy-pages@v4
+      - name: Verify published player
+        if: github.event_name != 'pull_request'
+        run: node tests/verify_pages.mjs "${{ steps.deployment.outputs.page_url }}"

@@ -1,6 +1,6 @@
-// Thin project adapter around TSRun's live public ES modules.
+// Thin project adapter around the pinned TSRun runtime bundled at build time.
 // Upstream source: https://github.com/josef-jelinek/TSRun
-const upstream='https://josef-jelinek.github.io/TSRun/';
+const upstream=new URL('./tsrun/',import.meta.url).href;
 const frameMs=1000*58688/3528000;
 const demos={
   boing:{path:'../assets/BoingDemo.dck',type:'dck'},
@@ -20,6 +20,7 @@ async function boot(){
   const matrix=new Uint8Array(8),joystick=new Uint8Array(2);
   const kbd=keys.initKeyboard(document.getElementById('keyboard'),matrix);
   pads.initJoysticks(joystick);
+  const padIds=['',''];
   let machine=cpu.createMachine(matrix,joystick),sfx=null;
   const [rom0,rom1,vert,frag]=await Promise.all([
     resource(upstream+'roms/ts2068-0.rom',true),resource(upstream+'roms/ts2068-1.rom',true),
@@ -80,7 +81,7 @@ async function boot(){
     if(err||!value)reject(new Error(err||'WebGL2 unavailable'));else resolve(value);
   }));
   video.setCrt(gfx,false);
-  sfx=await new Promise((resolve,reject)=>sound.initSound(44100,(err,value)=>{
+  sfx=await new Promise((resolve,reject)=>sound.initSound(1000/frameMs,(err,value)=>{
     if(err||!value)reject(new Error(err||'Web Audio unavailable'));else resolve(value);
   }));
   cpu.setSoundRate(machine,sfx.context.sampleRate);cpu.enableSound(machine,true);
@@ -89,20 +90,21 @@ async function boot(){
     cpu.setVideoOn(machine,!turbo);cpu.enableSound(machine,!turbo);
     cpu.runFrame(machine);const chunk=cpu.takeAudio(machine);
     if(turbo)return;
-    if(chunk.n>0&&(sound.soundIsRunning(sfx)||!sound.soundQueueReady(sfx)))sound.pushSound(sfx,chunk);
+    if(chunk.n>0&&sound.soundWantsFrame(sfx))sound.pushSound(sfx,chunk);
   }
   function frame(now){
-    requestAnimationFrame(frame);pads.pollJoysticks(joystick);
+    requestAnimationFrame(frame);pads.pollJoysticks(joystick,padIds);
     if(!last)last=now;carry+=Math.min(80,now-last);last=now;
     let ran=0;while(carry>=frameMs&&ran<4){step();carry-=frameMs;ran++;}
     const tapePlaying=machine.tape.state?machine.tape.state==='playing':machine.tape.playing&&!machine.tape.waiting;
     if(tapePlaying){
       while(ran<100&&(machine.tape.state?machine.tape.state==='playing':machine.tape.playing&&!machine.tape.waiting)){step(true);ran++;}
       step();
-    }else if(started&&sound.soundIsRunning(sfx)&&!sound.soundQueueReady(sfx)&&ran<4){step();carry=Math.max(carry,0)-frameMs;}
+    }else if(started&&sound.soundIsRunning(sfx)&&sound.soundWantsFrame(sfx)&&ran<4){step();carry=Math.max(carry,0)-frameMs;}
     video.drawScreen(gfx,machine.pixels);
   }
   window.tsVideoDemo={
+    diagnostics(){return {demo:current,pc:machine.cpu.pc,pixels:Array.from(machine.pixels),audioState:sfx.context.state,audioStats:sound.soundStats(sfx)};},
     start(){started=true;sound.resumeSound(sfx);window.focus();canvas.focus();return true;},
     load(id){this.start();load(id).catch(error=>notify('tsvideo-error',{message:error.message}));},
     reset(){keys.handleBlur(kbd);sound.resetSound(sfx);if(demos[current].type==='tap')notify('tsvideo-loading',{demo:current});insertCurrent();notify('tsvideo-loaded',{demo:current});}

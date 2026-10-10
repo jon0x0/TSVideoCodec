@@ -1,0 +1,21 @@
+{
+  "revision": "41dbe3e41c692a1806f2cb900c5a0faa1549ae77",
+  "files": {
+    "machine.js": "fdbff6039cab4bd5871ffb21941b2e0c22fc06a3e110d89b7b29618fe388d411",
+    "z80.js": "26b6c2f044e59cf6531b9fa939fe482645af99c258905410e012152ecf9cf5ac",
+    "tape.js": "826dffa29813572c253d02772b57e6d480a3b052f8365aa0d423b5be874d65ca",
+    "dock.js": "316db509d1ea4fdec2fd99f3f2970daff3f891b6e0ff8b0ce5a6acc2de8e3021",
+    "ay.js": "1d0bc7937d59a4e9c83f04209b350aac8e2f3ffd733a3587f6db28aafdaecad5",
+    "screen.js": "50a0c322d567d39442e623bda0f09fc35af004d9d4fe7ad1aca3b5b68302e9d7",
+    "sound.js": "5dce455c24e2809f4146954d28771e0bba7646b9bfbb546b90be7797310a72fc",
+    "sound.worklet.js": "ec601ca7b942a24c942277091865cabbc94d78b52ecb40c88f88383873673a3d",
+    "keyboard.js": "77b194865e9201a77a09b5dcb0007c844fb0d1ea1f9dd8cfb05b481f61fcfc05",
+    "joystick.js": "4b211e692f67ea84f52b88ab003fc3e68a0aa762342f1d1364480a5cea17adce",
+    "screen.vert.glsl": "19d4fada7c7b6bdd71c1d83a0ac7c7e72dd76fa3f22b0c45235a1c57d36f489e",
+    "screen.frag.glsl": "daf3f51a4054a686f39577360d7c97f82811f13077c287a2d59d7e32ae31bd0d",
+    "keyboard.png": "bbafcbb28a6acb8ef17b20a7ab47200071630a41f6d60582d3a3099295fd19a6",
+    "roms/ts2068-0.rom": "6338f94b2ee5000b81a64a4f055b8f1d2db6e669e52cafc11233ff63896fae13",
+    "roms/ts2068-1.rom": "e52e861bd30c144f174a596233c6f3e5804cff170fdc50d44ba61a1683b8174c",
+    "README.md": "47948b79fa58cb21fcdc76b1c6fe51c8e814320a94d84f000d09fc0fb4178ef1"
+  }
+}

@@ -26,7 +26,7 @@ also provides the original DCK and TAP files for Fuse or compatible hardware.
 - `tests/` — deterministic codec and round-trip tests
 - `docs/` — format, automatic-analysis, measurements, and implementation notes
 - `demos/` — the only checked-in binary demos, plus their curated build scripts
-- `web/` — the GitHub Pages gallery and live-TSRun adapter
+- `web/` — the GitHub Pages gallery and pinned TSRun adapter
 
 Generated frames, streams, reports, source videos, native executables, and
 assembler objects are deliberately excluded from Git.
